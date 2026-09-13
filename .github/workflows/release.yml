@@ -22,6 +22,7 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
+          ref: main
           fetch-depth: 0
           fetch-tags: true
 
@@ -33,7 +34,7 @@ jobs:
           elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
             TAG="${GITHUB_REF_NAME}"
           else
-            TAG=$(git describe --tags --abbrev=0 2>/dev/null || git tag -l "v*" --sort=-v:refname | head -n 1 || echo "v1.22.16")
+            TAG=$(git tag -l "v*" --sort=-v:refname | head -n 1 || echo "v1.22.16")
           fi
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
           echo "Using release tag: ${TAG}"
