@@ -72,24 +72,24 @@ jobs:
           CONFLICT_FILES: ${{ steps.merge.outputs.conflict_files }}
         run: |
           if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
-            MESSAGE="⚠️ *Cli-Proxy-API-Management-Center 同步冲突告警*
+            TEXT="⚠️ *Cli-Proxy-API-Management-Center 同步冲突告警*
 
-*仓库:* \`${{ github.repository }}\`
-*上游:* \`router-for-me/Cli-Proxy-API-Management-Center\` (main)
-*状态:* 自动合并失败，存在冲突！
+          *仓库:* \`${{ github.repository }}\`
+          *上游:* \`router-for-me/Cli-Proxy-API-Management-Center\` (main)
+          *状态:* 自动合并失败，存在冲突！
 
-*冲突文件列表:*
-\`\`\`
-${CONFLICT_FILES}
-\`\`\`
+          *冲突文件列表:*
+          \`\`\`
+          ${CONFLICT_FILES}
+          \`\`\`
 
-🔗 [点击查看 GitHub Action 详情](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+          🔗 [点击查看 GitHub Action 详情](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
 
-请及时拉取仓库手动解决冲突。"
+          请及时拉取仓库手动解决冲突。"
 
             curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
               -d "chat_id=${TG_CHAT_ID}" \
-              --data-urlencode "text=${MESSAGE}" \
+              --data-urlencode "text=${TEXT}" \
               -d "parse_mode=Markdown"
             echo "Telegram alert sent."
           else
