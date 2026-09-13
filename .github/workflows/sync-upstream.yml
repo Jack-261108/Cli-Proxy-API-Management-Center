@@ -55,9 +55,15 @@ jobs:
             echo "Merge conflict detected. Checking conflicting files..."
             for f in $(git diff --name-only --diff-filter=U); do
               case "$f" in
-                README.md|README_CN.md|assets/*|*SponsorQuickStart*|*quickStart*)
-                  echo "Auto-resolving sponsor/ad conflict by discarding upstream sponsor: $f"
-                  git rm -f "$f" 2>/dev/null || git checkout --ours -- "$f" 2>/dev/null || true
+                *SponsorQuickStart*|*quickStart*)
+                  # 赞助商卡片专属文件：直接强制删除，不保留任何版本
+                  echo "Auto-discarding upstream sponsor component: $f"
+                  git rm -f "$f" 2>/dev/null || true
+                  ;;
+                README.md|README_CN.md|assets/*)
+                  # 文档/广告图片：保留我方去广告版本
+                  echo "Auto-resolving doc/ad conflict by keeping our clean version: $f"
+                  git checkout --ours -- "$f" 2>/dev/null || git rm -f "$f" 2>/dev/null || true
                   git add "$f" 2>/dev/null || true
                   ;;
               esac
