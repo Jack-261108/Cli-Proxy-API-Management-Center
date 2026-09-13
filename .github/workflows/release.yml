@@ -5,6 +5,11 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Release Tag (leave blank for latest tag)'
+        required: false
+        default: ''
 
 jobs:
   build-and-release:
@@ -19,6 +24,19 @@ jobs:
         with:
           fetch-depth: 0
           fetch-tags: true
+
+      - name: Determine tag and version
+        id: vars
+        run: |
+          if [ -n "${{ inputs.tag_name }}" ]; then
+            TAG="${{ inputs.tag_name }}"
+          elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            TAG="${GITHUB_REF_NAME}"
+          else
+            TAG=$(git describe --tags --abbrev=0 2>/dev/null || git tag -l "v*" --sort=-v:refname | head -n 1 || echo "v1.22.16")
+          fi
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "Using release tag: ${TAG}"
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -36,7 +54,7 @@ jobs:
       - name: Build all-in-one HTML
         run: bun run build
         env:
-          VERSION: ${{ github.ref_name }}
+          VERSION: ${{ steps.vars.outputs.tag }}
 
       - name: Prepare release assets
         run: |
@@ -47,20 +65,27 @@ jobs:
       - name: Generate release notes
         run: |
           set -euo pipefail
-          current_tag="${GITHUB_REF_NAME}"
+          current_tag="${{ steps.vars.outputs.tag }}"
           previous_tag="$(git tag --list 'v*' --sort=-v:refname | grep -v "^${current_tag}$" | head -n 1 || true)"
           if [ -n "${previous_tag}" ]; then
-            range="${previous_tag}..${current_tag}"
+            range="${previous_tag}..HEAD"
           else
-            range="${current_tag}"
+            range="HEAD"
           fi
 
           : > release-notes.md
-          git log --pretty=format:"- %h %s" "${range}" >> release-notes.md
+          echo "## Release ${current_tag}" >> release-notes.md
+          echo "" >> release-notes.md
+          echo "Web UI 单文件构建产物（已移除快速开始页面）。" >> release-notes.md
+          echo "" >> release-notes.md
+          echo "### 变更记录" >> release-notes.md
+          git log --pretty=format:"- %h %s" -n 20 >> release-notes.md || true
 
-      - name: Create Release
+      - name: Create or Update Release
         uses: softprops/action-gh-release@v1
         with:
+          tag_name: ${{ steps.vars.outputs.tag }}
+          name: Release ${{ steps.vars.outputs.tag }}
           files: dist/management.html
           body_path: release-notes.md
           draft: false

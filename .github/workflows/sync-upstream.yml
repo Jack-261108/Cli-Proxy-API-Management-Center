@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 jobs:
   sync:
@@ -63,6 +64,14 @@ jobs:
         run: |
           git push origin main
           git push origin --tags
+
+      - name: Trigger Release Build
+        if: steps.check.outputs.has_updates == 'true' && steps.merge.outputs.conflict == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "Triggering release build..."
+          gh workflow run release.yml || echo "Workflow trigger failed or already queued"
 
       - name: Send Telegram notification on conflict
         if: steps.check.outputs.has_updates == 'true' && steps.merge.outputs.conflict == 'true'
