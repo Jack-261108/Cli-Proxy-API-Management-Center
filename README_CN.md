@@ -1,4 +1,6 @@
-# CLI Proxy API 管理中心
+# CLI Proxy API 管理中心（去广告纯净版）
+
+> 💡 **去广告纯净版说明**：本仓库已**彻底移除“快速开始”页面、APIKEY.FUN 推广赞助卡片及所有相关组件代码**，保持界面简洁纯粹，并配置了每 3 小时自动同步上游更新与 Telegram 冲突告警。
 
 用于管理与故障排查 **CLI Proxy API** 的单文件 Web UI（React + TypeScript），通过 **Management API** 完成配置、凭据与日志等管理操作。
 

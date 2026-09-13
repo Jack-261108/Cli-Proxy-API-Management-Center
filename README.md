@@ -1,4 +1,6 @@
-# CLI Proxy API Management Center
+# CLI Proxy API Management Center (Clean Ad-Free Edition)
+
+> 💡 **Clean Ad-Free Fork Note**: This repository is a clean fork with the **"Quick Start" page, APIKEY.FUN sponsor cards, and related code completely removed**. It automatically tracks upstream updates every 3 hours with Telegram alert integration.
 
 A single-file Web UI (React + TypeScript) for operating and troubleshooting the **CLI Proxy API** via its **Management API** (config, credentials, and logs).
 
