@@ -92,13 +92,14 @@ jobs:
         if: steps.check.outputs.has_updates == 'true' && steps.merge.outputs.conflict == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           LATEST_TAG=$(git tag -l "v*" --sort=-v:refname | head -n 1 || echo "")
           echo "Triggering release build for tag: ${LATEST_TAG:-latest}..."
           if [ -n "$LATEST_TAG" ]; then
-            gh workflow run release.yml -f tag_name="$LATEST_TAG" || echo "Workflow trigger failed or already queued"
+            gh workflow run release.yml --repo "$GH_REPO" -f tag_name="$LATEST_TAG" || echo "Workflow trigger failed or already queued"
           else
-            gh workflow run release.yml || echo "Workflow trigger failed or already queued"
+            gh workflow run release.yml --repo "$GH_REPO" || echo "Workflow trigger failed or already queued"
           fi
 
       - name: Send Telegram notification on conflict
