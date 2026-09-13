@@ -52,11 +52,28 @@ jobs:
             echo "conflict=false" >> $GITHUB_OUTPUT
             echo "Merged upstream/main successfully."
           else
-            echo "conflict=true" >> $GITHUB_OUTPUT
-            CONFLICT_FILES=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
-            echo "conflict_files=$CONFLICT_FILES" >> $GITHUB_OUTPUT
-            echo "Merge conflict detected in files: $CONFLICT_FILES"
-            git merge --abort || true
+            echo "Merge conflict detected. Checking conflicting files..."
+            for f in $(git diff --name-only --diff-filter=U); do
+              case "$f" in
+                README.md|README_CN.md|assets/*)
+                  echo "Auto-resolving doc/ad conflict by keeping our version: $f"
+                  git checkout --ours -- "$f" 2>/dev/null || git rm -f "$f" 2>/dev/null || true
+                  git add "$f" 2>/dev/null || true
+                  ;;
+              esac
+            done
+
+            REMAINING_CONFLICTS=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
+            if [ -z "$REMAINING_CONFLICTS" ]; then
+              git commit --no-edit -m "chore: sync upstream changes (auto-preserve ad-free docs)"
+              echo "conflict=false" >> $GITHUB_OUTPUT
+              echo "All conflicts were in docs/ad files and auto-resolved successfully."
+            else
+              echo "conflict=true" >> $GITHUB_OUTPUT
+              echo "conflict_files=$REMAINING_CONFLICTS" >> $GITHUB_OUTPUT
+              echo "Unresolved code conflicts in: $REMAINING_CONFLICTS"
+              git merge --abort || true
+            fi
           fi
 
       - name: Push updates
