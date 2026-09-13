@@ -1,0 +1,98 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: '23 */6 * * *' # 每 6 小时自动检查一次上游更新
+  workflow_dispatch: # 支持手动一键触发同步
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git user
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add and fetch upstream
+        run: |
+          git remote add upstream https://github.com/router-for-me/Cli-Proxy-API-Management-Center.git || true
+          git fetch upstream main --tags
+
+      - name: Check for upstream changes
+        id: check
+        run: |
+          UPSTREAM_HEAD=$(git rev-parse upstream/main)
+          BASE=$(git merge-base HEAD upstream/main)
+          if [ "$UPSTREAM_HEAD" = "$BASE" ]; then
+            echo "has_updates=false" >> $GITHUB_OUTPUT
+            echo "Already up-to-date with upstream/main."
+          else
+            echo "has_updates=true" >> $GITHUB_OUTPUT
+            echo "New updates found in upstream/main."
+          fi
+
+      - name: Merge upstream changes
+        if: steps.check.outputs.has_updates == 'true'
+        id: merge
+        run: |
+          echo "Attempting to merge upstream/main..."
+          if git merge upstream/main --no-edit -m "chore: sync upstream changes"; then
+            echo "conflict=false" >> $GITHUB_OUTPUT
+            echo "Merged upstream/main successfully."
+          else
+            echo "conflict=true" >> $GITHUB_OUTPUT
+            CONFLICT_FILES=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
+            echo "conflict_files=$CONFLICT_FILES" >> $GITHUB_OUTPUT
+            echo "Merge conflict detected in files: $CONFLICT_FILES"
+            git merge --abort || true
+          fi
+
+      - name: Push updates
+        if: steps.check.outputs.has_updates == 'true' && steps.merge.outputs.conflict == 'false'
+        run: |
+          git push origin main
+          git push origin --tags
+
+      - name: Send Telegram notification on conflict
+        if: steps.check.outputs.has_updates == 'true' && steps.merge.outputs.conflict == 'true'
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CONFLICT_FILES: ${{ steps.merge.outputs.conflict_files }}
+        run: |
+          if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
+            MESSAGE="⚠️ *Cli-Proxy-API-Management-Center 同步冲突告警*
+
+*仓库:* \`${{ github.repository }}\`
+*上游:* \`router-for-me/Cli-Proxy-API-Management-Center\` (main)
+*状态:* 自动合并失败，存在冲突！
+
+*冲突文件列表:*
+\`\`\`
+${CONFLICT_FILES}
+\`\`\`
+
+🔗 [点击查看 GitHub Action 详情](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+
+请及时拉取仓库手动解决冲突。"
+
+            curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+              -d "chat_id=${TG_CHAT_ID}" \
+              --data-urlencode "text=${MESSAGE}" \
+              -d "parse_mode=Markdown"
+            echo "Telegram alert sent."
+          else
+            echo "::warning::TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is not configured in repository secrets."
+          fi
+          exit 1
