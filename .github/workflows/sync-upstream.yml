@@ -2,8 +2,8 @@ name: Sync Upstream
 
 on:
   schedule:
-    - cron: '23 */6 * * *' # 每 6 小时自动检查一次上游更新
-  workflow_dispatch: # 支持手动一键触发同步
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: write
