@@ -28,7 +28,7 @@ jobs:
       - name: Add and fetch upstream
         run: |
           git remote add upstream https://github.com/router-for-me/Cli-Proxy-API-Management-Center.git || true
-          git fetch upstream main --tags
+          git fetch upstream main --tags --force
 
       - name: Check for upstream changes
         id: check
@@ -63,7 +63,7 @@ jobs:
         if: steps.check.outputs.has_updates == 'true' && steps.merge.outputs.conflict == 'false'
         run: |
           git push origin main
-          git push origin --tags
+          git push origin --tags --force
 
       - name: Trigger Release Build
         if: steps.check.outputs.has_updates == 'true' && steps.merge.outputs.conflict == 'false'
