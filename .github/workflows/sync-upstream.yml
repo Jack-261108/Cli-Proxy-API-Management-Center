@@ -55,13 +55,13 @@ jobs:
             echo "Merge conflict detected. Checking conflicting files..."
             for f in $(git diff --name-only --diff-filter=U); do
               case "$f" in
-                *SponsorQuickStart*|*quickStart*)
+                *SponsorQuickStart*|*quickStart*|*QuickStart*|*sponsorQuickStart*)
                   # 赞助商卡片专属文件：直接强制删除，不保留任何版本
                   echo "Auto-discarding upstream sponsor component: $f"
                   git rm -f "$f" 2>/dev/null || true
                   ;;
-                README.md|README_CN.md|assets/*)
-                  # 文档/广告图片：保留我方去广告版本
+                README.md|README_CN.md|assets/*|src/features/providers/ProvidersWorkbenchPage.tsx)
+                  # 文档/广告图片/去广告核心页面：保留我方去广告版本
                   echo "Auto-resolving doc/ad conflict by keeping our clean version: $f"
                   git checkout --ours -- "$f" 2>/dev/null || git rm -f "$f" 2>/dev/null || true
                   git add "$f" 2>/dev/null || true
@@ -71,7 +71,7 @@ jobs:
 
             REMAINING_CONFLICTS=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
             if [ -z "$REMAINING_CONFLICTS" ]; then
-              git commit --no-edit -m "chore: sync upstream changes (auto-preserve ad-free docs)"
+              git commit --no-edit -m "chore: sync upstream changes (auto-preserve ad-free docs/components)"
               echo "conflict=false" >> $GITHUB_OUTPUT
               echo "All conflicts were in docs/ad files and auto-resolved successfully."
             else
