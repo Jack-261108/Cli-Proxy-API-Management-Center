@@ -105,8 +105,8 @@ jobs:
       - name: Send Telegram notification on conflict
         if: steps.check.outputs.has_updates == 'true' && steps.merge.outputs.conflict == 'true'
         env:
-          TG_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TG_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN || secrets.TELEGRAM_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID || secrets.TELEGRAM_CHAT_ID }}
           CONFLICT_FILES: ${{ steps.merge.outputs.conflict_files }}
         run: |
           if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
@@ -126,6 +126,6 @@ jobs:
               -d "parse_mode=Markdown")
             echo "Telegram API Response: ${RESPONSE}"
           else
-            echo "::warning::TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is not configured in repository secrets."
+            echo "::warning::TG_BOT_TOKEN (or TELEGRAM_BOT_TOKEN) / TG_CHAT_ID (or TELEGRAM_CHAT_ID) is not configured in repository secrets."
           fi
           exit 1
