@@ -490,6 +490,7 @@
     "seven_day_cowork": "7-day Cowork",
     "iguana_necktie": "Iguana Necktie",
     "seven_day_fable": "7-day Fable 5",
+    "cloud_session_credits": "Cloud session credits",
     "extra_usage_label": "Extra Usage",
     "plan_label": "Plan",
     "plan_unknown": "Unknown",
@@ -535,6 +536,8 @@
     "reset_confirm_title": "Reset Codex quota",
     "reset_confirm_message": "This will consume 1 manual reset to reset the Codex quota for \"{{name}}\". Continue?",
     "reset_confirm_button": "Reset quota",
+    "reset_not_confirmed": "Quota reset was not confirmed. Refresh the quota before trying again.",
+    "reset_cooldown_failed": "Quota was reset, but the gateway cooldown could not be cleared. On the original connection, use Clear cooldown on the credential page; do not redeem another reset.",
     "reset_success": "Reset Codex quota for \"{{name}}\"",
     "reset_failed": "Failed to reset Codex quota for \"{{name}}\": {{message}}",
     "plan_plus": "Plus",
@@ -1260,6 +1263,8 @@
           "signature_title": "Signature Validation"
         },
         "server": {
+          "github_token": "Global GitHub Token",
+          "github_token_hint": "Used for server-side GitHub requests, such as panel updates and plugin downloads. Takes precedence over GITHUB_TOKEN; leave empty to use environment credentials, or unauthenticated requests if none are set. Matching plugin store authentication rules take precedence.",
           "host": "Host Address",
           "port": "Port"
         },
@@ -2083,7 +2088,7 @@
       "disabledHint": "Disabled entries won't be used by the gateway",
       "websockets": "Enable WebSockets",
       "testModel": "Test model",
-      "testModelClaudeHint": "Used for connectivity testing only; not saved",
+      "testModelHint": "Used for connectivity testing only; not saved",
       "testModelAutoWith": "Auto · {{name}}",
       "testModelAutoEmpty": "Auto (no models added yet)",
       "testModelCustom": "{{name}} (custom)",
@@ -2202,6 +2207,9 @@
     }
   },
   "claude_reset": {
+    "expiry_title": "Manual reset expiry ({{timezone}})",
+    "grant_number": "Grant {{index}}",
+    "expiry_unknown": "Expiry unknown",
     "retry_confirm": "Retry the unknown reset for “{{name}}” with its original request ID? A reset may already have been spent. Retry within 10 minutes; do not reload or start another claim in another tab.",
     "remaining": "Resets remaining",
     "title": "Banked resets",

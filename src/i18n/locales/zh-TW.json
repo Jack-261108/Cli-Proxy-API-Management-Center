@@ -488,6 +488,7 @@
     "seven_day_cowork": "7 天 Cowork",
     "iguana_necktie": "Iguana Necktie",
     "seven_day_fable": "7 天 Fable 5",
+    "cloud_session_credits": "雲端工作階段額度",
     "extra_usage_label": "額外用量",
     "plan_label": "方案",
     "plan_unknown": "未知",
@@ -533,6 +534,9 @@
     "reset_confirm_title": "重置 Codex 配額",
     "reset_confirm_message": "將消耗 1 次主動重置次數來重置「{{name}}」的 Codex 配額。是否繼續？",
     "reset_confirm_button": "確認重置",
+    "reset_not_confirmed": "尚未確認額度重置成功，請重新整理額度後再決定是否重試。",
+    "reset_cooldown_failed": "額度已重置，但代理冷卻清除失敗。請在原連線的認證檔案頁面使用「清除冷卻」，不要再次消耗重置卡。",
+
     "reset_success": "已重置「{{name}}」的 Codex 配額",
     "reset_failed": "重置「{{name}}」的 Codex 配額失敗：{{message}}",
     "plan_plus": "Plus",
@@ -1284,6 +1288,8 @@
           "signature_title": "簽章驗證"
         },
         "server": {
+          "github_token": "全域 GitHub 權杖",
+          "github_token_hint": "用於面板更新、外掛下載等伺服器端 GitHub 請求。優先於 GITHUB_TOKEN；留空時使用環境變數憑證，未設定憑證則匿名請求。外掛商店符合的驗證規則優先。",
           "host": "主機位址",
           "port": "連接埠"
         },
@@ -2107,7 +2113,7 @@
       "disabledHint": "停用後不會被閘道使用",
       "websockets": "啟用 WebSockets",
       "testModel": "測試模型",
-      "testModelClaudeHint": "僅用於連通性測試,不會被儲存",
+      "testModelHint": "僅用於連通性測試,不會被儲存",
       "testModelAutoWith": "自動 · {{name}}",
       "testModelAutoEmpty": "自動(尚未新增模型)",
       "testModelCustom": "{{name}}(自訂)",
@@ -2226,6 +2232,9 @@
     }
   },
   "claude_reset": {
+    "expiry_title": "主動重置過期時間（{{timezone}}）",
+    "grant_number": "第 {{index}} 批",
+    "expiry_unknown": "到期時間未知",
     "retry_confirm": "使用原請求 ID 重試「{{name}}」結果未知的重置？可能已消耗一次重置。請在 10 分鐘內重試；請勿重新載入頁面或在其他分頁發起新請求。",
     "remaining": "剩餘重置次數",
     "title": "儲備重置次數",

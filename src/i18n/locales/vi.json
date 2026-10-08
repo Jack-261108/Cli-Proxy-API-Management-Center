@@ -533,6 +533,8 @@
     "reset_confirm_title": "Đặt lại quota Codex",
     "reset_confirm_message": "Thao tác này sẽ dùng 1 lượt đặt lại thủ công để đặt lại quota Codex cho \"{{name}}\". Tiếp tục?",
     "reset_confirm_button": "Đặt lại quota",
+    "reset_not_confirmed": "Chưa xác nhận đặt lại quota thành công. Hãy làm mới quota trước khi thử lại.",
+    "reset_cooldown_failed": "Quota đã được đặt lại nhưng không thể xóa thời gian chờ của gateway. Trên kết nối ban đầu, hãy dùng chức năng xóa thời gian chờ ở trang tệp xác thực; không sử dụng thêm lượt đặt lại.",
     "reset_success": "Đã đặt lại quota Codex cho \"{{name}}\"",
     "reset_failed": "Không thể đặt lại quota Codex cho \"{{name}}\": {{message}}",
     "plan_plus": "Plus",
@@ -1053,6 +1055,8 @@
           "devin_title": "Devin"
         },
         "server": {
+          "github_token": "Token GitHub toàn cục",
+          "github_token_hint": "Dùng cho các yêu cầu GitHub từ máy chủ, như cập nhật bảng điều khiển và tải plugin. Ưu tiên hơn GITHUB_TOKEN; để trống để dùng thông tin xác thực từ biến môi trường, hoặc gửi yêu cầu ẩn danh nếu chưa thiết lập. Các quy tắc xác thực phù hợp của kho plugin được ưu tiên.",
           "host": "Địa chỉ Host",
           "port": "Cổng"
         },
@@ -1960,7 +1964,7 @@
       "disabledHint": "Gateway sẽ không dùng mục đã tắt",
       "websockets": "Bật WebSocket",
       "testModel": "Model kiểm thử",
-      "testModelClaudeHint": "Chỉ dùng để kiểm thử kết nối; không được lưu",
+      "testModelHint": "Chỉ dùng để kiểm thử kết nối; không được lưu",
       "testModelAutoWith": "Tự động · {{name}}",
       "testModelAutoEmpty": "Tự động (chưa thêm model nào)",
       "testModelCustom": "{{name}} (tùy chỉnh)",
@@ -2208,6 +2212,9 @@
     "remaining": "Còn lại {{percent}}%"
   },
   "claude_reset": {
+    "expiry_title": "Hết hạn đặt lại thủ công ({{timezone}})",
+    "grant_number": "Gói {{index}}",
+    "expiry_unknown": "Chưa rõ thời gian hết hạn",
     "retry_confirm": "Thử lại lượt đặt lại chưa rõ kết quả cho “{{name}}” với ID yêu cầu ban đầu? Một lượt đặt lại có thể đã được tiêu tốn. Hãy thử lại trong vòng 10 phút; không tải lại trang hoặc bắt đầu nhận ở tab khác.",
     "remaining": "Lượt đặt lại còn lại",
     "title": "Lượt đặt lại dự trữ",
