@@ -139,6 +139,8 @@ The UI language is automatically detected from browser settings and can be manua
 
 ## Development
 
+This project is built and tested with **Bun 1.4.3**, pinned in `package.json` and in CI.
+
 ```bash
 bun run dev        # Vite dev server
 bun run build      # tsc + Vite build

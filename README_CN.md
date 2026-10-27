@@ -139,6 +139,8 @@ bun run build
 
 ## 开发命令
 
+本项目使用 **Bun 1.4.3** 构建与测试，版本锁定在 `package.json` 与 CI 配置中。
+
 ```bash
 bun run dev        # 启动开发服务器
 bun run build      # tsc + Vite 构建
