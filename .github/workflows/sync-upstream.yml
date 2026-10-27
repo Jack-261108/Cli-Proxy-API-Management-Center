@@ -100,12 +100,28 @@ jobs:
             [ -f "$f" ] || continue
             if grep -q "\*\*Bun $BUN\*\*" "$f"; then
               echo "$f already states Bun $BUN."
-            elif grep -q '\*\*Bun [0-9][0-9.]*\*\*' "$f"; then
+              continue
+            fi
+            if grep -q '\*\*Bun [0-9][0-9.]*\*\*' "$f"; then
               perl -pi -e "s/\*\*Bun [0-9][0-9.]*\*\*/**Bun $BUN**/g" "$f"
               echo "Updated the Bun version in $f to $BUN."
-            else
-              echo "::warning::$f has no **Bun X.Y.Z** line; toolchainVersion.test.ts will fail."
+              continue
             fi
+            # No version line at all (upstream reworded it): write one, in the
+            # Development section when it exists, at the end otherwise.
+            if [ "$f" = "README.md" ]; then
+              BUN_LINE="This project is built and tested with **Bun $BUN**, pinned in package.json and in CI."
+              BUN_FALLBACK="**Bun $BUN** is the pinned toolchain for this project."
+            else
+              BUN_LINE="本项目使用 **Bun $BUN** 构建与测试，版本锁定在 package.json 与 CI 配置中。"
+              BUN_FALLBACK="本项目使用 **Bun $BUN** 作为固定工具链。"
+            fi
+            export BUN_LINE BUN_FALLBACK
+            perl -0pi -e 's/^(## (?:Development|开发命令)[^\n]*\n)/$1\n$ENV{BUN_LINE}\n/m' "$f"
+            if ! grep -q "\*\*Bun $BUN\*\*" "$f"; then
+              printf '\n%s\n' "$BUN_FALLBACK" >> "$f"
+            fi
+            echo "Added the Bun version line to $f."
           done
           if ! git diff --quiet -- README.md README_CN.md; then
             git add README.md README_CN.md
