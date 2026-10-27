@@ -85,6 +85,33 @@ jobs:
             fi
           fi
 
+      - name: Align README Bun version with package.json
+        # We keep our own READMEs, but upstream's tests/toolchainVersion.test.ts
+        # asserts they state the pinned Bun release. Follow package.json so a
+        # upstream bump does not break CI.
+        if: steps.check.outputs.has_updates == 'true' && steps.merge.outputs.conflict == 'false'
+        run: |
+          BUN=$(sed -n 's/.*"packageManager"[[:space:]]*:[[:space:]]*"bun@\([0-9][0-9.]*\)".*/\1/p' package.json | head -n 1)
+          if [ -z "$BUN" ]; then
+            echo "::warning::No bun@X.Y.Z in packageManager; skipping README alignment."
+            exit 0
+          fi
+          for f in README.md README_CN.md; do
+            [ -f "$f" ] || continue
+            if grep -q "\*\*Bun $BUN\*\*" "$f"; then
+              echo "$f already states Bun $BUN."
+            elif grep -q '\*\*Bun [0-9][0-9.]*\*\*' "$f"; then
+              perl -pi -e "s/\*\*Bun [0-9][0-9.]*\*\*/**Bun $BUN**/g" "$f"
+              echo "Updated the Bun version in $f to $BUN."
+            else
+              echo "::warning::$f has no **Bun X.Y.Z** line; toolchainVersion.test.ts will fail."
+            fi
+          done
+          if ! git diff --quiet -- README.md README_CN.md; then
+            git add README.md README_CN.md
+            git commit -m "docs(readme): follow the pinned Bun release"
+          fi
+
       - name: Push updates
         if: steps.check.outputs.has_updates == 'true' && steps.merge.outputs.conflict == 'false'
         run: |
