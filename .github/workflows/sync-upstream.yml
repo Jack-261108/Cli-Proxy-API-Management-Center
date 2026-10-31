@@ -132,6 +132,12 @@ jobs:
         if: steps.check.outputs.has_updates == 'true' && steps.merge.outputs.conflict == 'false'
         run: |
           git push origin main
+          LATEST_TAG=$(git tag -l "v*" --sort=-v:refname | head -n 1 || echo "")
+          if [ -n "$LATEST_TAG" ]; then
+            # Force tag to point to the merge commit (not upstream's original commit)
+            git tag -f "$LATEST_TAG" HEAD
+            git push -f origin "refs/tags/${LATEST_TAG}"
+          fi
           git push origin --tags --force
 
       - name: Trigger Release Build
