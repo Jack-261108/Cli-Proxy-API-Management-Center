@@ -11,6 +11,10 @@ on:
         required: false
         default: ''
 
+concurrency:
+  group: release-${{ inputs.tag_name || (github.ref_type == 'tag' && github.ref_name) || 'latest' }}
+  cancel-in-progress: false
+
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
