@@ -160,7 +160,6 @@ describe('v8 YAML search paths', () => {
     ['xaiInjectXSearch', 'upstream.xai.inject-x-search'],
     ['streamingNonstreamKeepalive', 'requests.nonstream-keepalive-interval'],
     ['payloadDefaultRules', 'requests.payload.default'],
-    ['pluginStoreAuth', 'plugins.store-auth'],
   ]) {
     test(`indexes ${path}`, () => {
       expect(findConfigFieldById(fieldId)?.yamlKeys?.join('.')).toBe(path);

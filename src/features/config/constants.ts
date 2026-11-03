@@ -180,8 +180,6 @@ export const FIELD_VALUE_KEYS: Record<string, readonly string[]> = {
   // ── advanced ──────────────────────────────────────────────────────────────
   quotaAntigravityCredits: ['quotaAntigravityCredits'],
   pluginsEnabled: ['pluginsEnabled'],
-  pluginStoreSources: ['pluginStoreSources'],
-  pluginStoreAuth: ['pluginStoreAuth'],
   antigravitySensitiveWords: ['antigravitySensitiveWords'],
   devinSensitiveWords: ['devinSensitiveWords'],
   antigravitySignatureCacheEnabled: ['antigravitySignatureCacheEnabled'],

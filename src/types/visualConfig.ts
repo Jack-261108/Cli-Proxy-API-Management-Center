@@ -1,8 +1,6 @@
 export type PayloadParamValueType = 'string' | 'number' | 'boolean' | 'json';
 export type DisableImageGenerationMode = 'false' | 'true' | 'chat' | 'passthrough';
 export type RoutingStrategy = 'round-robin' | 'weighted-round-robin' | 'fill-first';
-export type PluginStoreAuthType = 'none' | 'bearer' | 'basic' | 'header' | 'github-token';
-export type PluginStoreAuthApplyTo = 'registry' | 'metadata' | 'artifact';
 export type PayloadParamValidationErrorCode =
   'payload_invalid_number' | 'payload_invalid_boolean' | 'payload_invalid_json';
 
@@ -102,19 +100,6 @@ export interface StreamingConfig {
   nonstreamKeepaliveInterval: string;
 }
 
-export type PluginStoreAuthRule = {
-  id: string;
-  match: string;
-  applyTo: PluginStoreAuthApplyTo[];
-  type: PluginStoreAuthType;
-  tokenEnv: string;
-  usernameEnv: string;
-  passwordEnv: string;
-  headerName: string;
-  headerValueEnv: string;
-  allowInsecure: boolean;
-};
-
 /** UI draft keys; YAML persistence uses the v8 tree, not these flattened names. */
 export type VisualConfigValues = {
   githubToken: string;
@@ -168,8 +153,6 @@ export type VisualConfigValues = {
   /** Client authentication keys at access.api-keys (never the upstream api-keys map). */
   apiKeysText: string;
   pluginsEnabled: boolean;
-  pluginStoreSources: string[];
-  pluginStoreAuth: PluginStoreAuthRule[];
   debug: boolean;
   commercialMode: boolean;
   loggingToFile: boolean;
@@ -270,8 +253,6 @@ export const DEFAULT_VISUAL_VALUES: VisualConfigValues = {
   authDir: '',
   apiKeysText: '',
   pluginsEnabled: false,
-  pluginStoreSources: [],
-  pluginStoreAuth: [],
   debug: false,
   commercialMode: false,
   loggingToFile: false,

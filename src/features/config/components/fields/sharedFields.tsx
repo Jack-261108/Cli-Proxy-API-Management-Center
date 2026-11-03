@@ -4,10 +4,8 @@
 
 import { useTranslation } from 'react-i18next';
 import type { VisualConfigValues } from '@/types/visualConfig';
-import { SPONSORS } from '../../sponsors';
 import { ApiKeysCardEditor } from '../blocks/ApiKeysCardEditor';
 import { SettingCell, SettingList, TextSetting, ToggleSetting } from './FieldPrimitives';
-import fieldStyles from './Field.module.scss';
 
 export type SharedFieldProps = {
   values: VisualConfigValues;
@@ -61,32 +59,12 @@ export function PortField({
 
 export function ProxyUrlField({ values, disabled, onChange, wide }: SharedFieldProps) {
   const { t } = useTranslation();
-  // 代理 URL 较长，调用处传 wide 独占整行；说明位挂赞助跳转（数据见 sponsors.ts，空则不渲染）。
-  const sponsor = SPONSORS[0];
   return (
     <TextSetting
       fieldId="proxyUrl"
       wide={wide}
       size="lg"
       label={t('config_management.visual.sections.network.proxy_url')}
-      description={
-        sponsor ? (
-          <>
-            {t('config_management.visual.sections.network.proxy_url_sponsor_hint')}{' '}
-            <a
-              className={fieldStyles.fieldSponsorLink}
-              href={sponsor.url}
-              target="_blank"
-              rel="noopener noreferrer sponsored"
-            >
-              {sponsor.logo ? (
-                <img className={fieldStyles.fieldSponsorLogo} src={sponsor.logo} alt="" />
-              ) : null}
-              {sponsor.name}
-            </a>
-          </>
-        ) : undefined
-      }
       placeholder="socks5://user:pass@127.0.0.1:1080/"
       value={values.proxyUrl}
       onChange={(proxyUrl) => onChange({ proxyUrl })}

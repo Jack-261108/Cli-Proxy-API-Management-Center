@@ -1,24 +1,16 @@
 import { describe, expect, test } from 'bun:test';
 import { getPluginLogo } from '../src/features/plugins/pluginLogo';
-import type { PluginListEntry, PluginStoreEntry } from '../src/types';
+import type { PluginListEntry } from '../src/types';
 
 const plugin = (overrides: Partial<PluginListEntry> = {}) =>
   ({ id: 'example', logo: '', metadata: null, ...overrides }) as PluginListEntry;
-const entry = (overrides: Partial<PluginStoreEntry> = {}) =>
-  ({
-    id: 'example',
-    logo: 'https://example.com/store.png',
-    repository: 'owner/repo',
-    ...overrides,
-  }) as PluginStoreEntry;
 
 describe('management plugin logos', () => {
-  test('uses the store logo for unregistered plugins or missing runtime logos', () => {
-    expect(getPluginLogo(plugin({ registered: false }), [entry()])).toBe(entry().logo);
-    expect(getPluginLogo(plugin({ registered: true }), [entry()])).toBe(entry().logo);
+  test('returns runtime logo when present', () => {
+    expect(getPluginLogo(plugin({ logo: 'runtime.png' }))).toBe('runtime.png');
   });
 
-  test('prefers runtime logo, then metadata logo over store metadata', () => {
+  test('prefers runtime logo over metadata logo', () => {
     const metadata = {
       name: '',
       version: '',
@@ -27,28 +19,22 @@ describe('management plugin logos', () => {
       logo: 'metadata.png',
       configFields: [],
     };
-    expect(getPluginLogo(plugin({ logo: 'runtime.png', metadata }), [entry()])).toBe('runtime.png');
-    expect(getPluginLogo(plugin({ logo: '  ', metadata }), [entry()])).toBe('metadata.png');
+    expect(getPluginLogo(plugin({ logo: 'runtime.png', metadata }))).toBe('runtime.png');
   });
 
-  test('does not use unrelated or ambiguous registry entries', () => {
-    expect(getPluginLogo(plugin(), [entry({ id: 'other' })])).toBe('');
-    expect(getPluginLogo(plugin(), [entry(), entry({ repository: 'other/repo' })])).toBe('');
-    expect(getPluginLogo(plugin(), [])).toBe('');
-  });
-
-  test('matches repository metadata when multiple sources declare the same ID', () => {
+  test('falls back to metadata logo when runtime logo is blank', () => {
     const metadata = {
       name: '',
       version: '',
       author: '',
-      githubRepository: 'https://github.com/owner/repo.git',
-      logo: '',
+      githubRepository: '',
+      logo: 'metadata.png',
       configFields: [],
     };
-    expect(
-      getPluginLogo(plugin({ metadata }), [entry(), entry({ repository: 'other/repo' })])
-    ).toBe(entry().logo);
-    expect(getPluginLogo(plugin({ metadata }), [entry({ repository: 'other/repo' })])).toBe('');
+    expect(getPluginLogo(plugin({ logo: '  ', metadata }))).toBe('metadata.png');
+  });
+
+  test('returns empty string when no logo is available', () => {
+    expect(getPluginLogo(plugin())).toBe('');
   });
 });

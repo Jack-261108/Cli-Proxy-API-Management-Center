@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import { useTranslation } from 'react-i18next';
-import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/Button';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { Input } from '@/components/ui/Input';
@@ -13,18 +12,16 @@ import {
   IconRefreshCw,
   IconSearch,
   IconSettings,
-  IconSidebarStore,
   IconTrash2,
 } from '@/components/ui/icons';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
-import { pluginsApi, pluginStoreApi } from '@/services/api';
+import { pluginsApi } from '@/services/api';
 import { useAuthStore, useConfigStore, useNotificationStore } from '@/stores';
 import { getErrorMessage, isRecord } from '@/utils/helpers';
 import type {
   PluginConfigField,
   PluginListEntry,
   PluginListResponse,
-  PluginStoreEntry,
 } from '@/types';
 import {
   buildPluginConfigDraft,
@@ -63,20 +60,13 @@ const hasRestartRequiredError = (error: unknown) =>
 
 export function PluginsPage() {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const connectionStatus = useAuthStore((state) => state.connectionStatus);
   const apiBase = useAuthStore((state) => state.apiBase);
-  const managementKey = useAuthStore((state) => state.managementKey);
   const clearConfigCache = useConfigStore((state) => state.clearCache);
   const showNotification = useNotificationStore((state) => state.showNotification);
   const showConfirmation = useNotificationStore((state) => state.showConfirmation);
 
   const [data, setData] = useState<PluginListResponse | null>(null);
-  const [storeLogos, setStoreLogos] = useState<{
-    apiBase: string;
-    managementKey: string;
-    entries: PluginStoreEntry[];
-  } | null>(null);
   const [filter, setFilter] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
@@ -133,30 +123,6 @@ export function PluginsPage() {
   useEffect(() => {
     void loadPlugins();
   }, [loadPlugins]);
-
-  useEffect(() => {
-    setStoreLogos(null);
-    if (!connected || !data) return;
-    let cancelled = false;
-    void pluginStoreApi.list().then(
-      (response) => {
-        if (!cancelled) {
-          setStoreLogos({ apiBase, managementKey, entries: response.plugins });
-        }
-      },
-      () => {
-        // Store metadata is optional; its failure must not block plugin management.
-      }
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [connected, apiBase, managementKey, data]);
-
-  const logoEntries =
-    connected && storeLogos?.apiBase === apiBase && storeLogos.managementKey === managementKey
-      ? storeLogos.entries
-      : [];
 
   const pluginStats = useMemo(() => {
     const plugins = data?.plugins ?? [];
@@ -566,10 +532,6 @@ export function PluginsPage() {
           <IconRefreshCw size={16} />
           {t('plugin_management.refresh')}
         </Button>
-        <Button variant="secondary" size="sm" onClick={() => navigate('/plugin-store')}>
-          <IconSidebarStore size={16} />
-          {t('plugin_store.title')}
-        </Button>
       </div>
 
       {/* ── Plugin List ── */}
@@ -599,7 +561,7 @@ export function PluginsPage() {
       ) : (
         <div className={styles.pluginList}>
           {visiblePlugins.map((plugin) => {
-            const logo = resolvePluginAsset(getPluginLogo(plugin, logoEntries));
+            const logo = resolvePluginAsset(getPluginLogo(plugin));
             const github = plugin.metadata?.githubRepository.trim();
             const openingConfig = openingConfigID === plugin.id;
             const deletingPlugin = deletingID === plugin.id;

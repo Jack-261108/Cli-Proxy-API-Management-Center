@@ -282,40 +282,6 @@
   }
 }
 
-/* ---------- 代理 URL 的赞助跳转（作为行说明渲染） ---------- */
-
-/* 与正文融为一体的高亮链接：同字号，复用全站金色（amber）badge 配方，hover 底色加深。 */
-.fieldSponsorLink {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 1px 5px;
-  border: 1px solid var(--amber-30);
-  border-radius: 5px;
-  background: var(--amber-10);
-  color: var(--amber-text);
-  font-weight: 600;
-  text-decoration: none;
-  vertical-align: baseline;
-  transition: background-color var(--dur-hover, 200ms) var(--ease-out-strong, ease-out);
-
-  &:hover {
-    text-decoration: none;
-  }
-}
-
-@media (hover: hover) and (pointer: fine) {
-  .fieldSponsorLink:hover {
-    background: var(--amber-30);
-  }
-}
-
-.fieldSponsorLogo {
-  display: block;
-  width: auto;
-  height: 13px;
-}
-
 /* ---------- 搜索锚点与脉冲高亮 ---------- */
 
 .fieldAnchor {
@@ -391,8 +357,7 @@
 
 @media (prefers-reduced-motion: reduce) {
   .fieldsRoot :global(.input),
-  .selectControl > button[aria-haspopup='listbox'],
-  .fieldSponsorLink {
+  .selectControl > button[aria-haspopup='listbox'] {
     transition: none;
   }
 
