@@ -40,6 +40,8 @@ import {
   useThemeStore,
 } from '@/stores';
 import { AUTH_FILES_CHANGED_EVENT } from '@/features/authFiles/authFilesEvents';
+import { isLogsPageAvailable } from '@/features/logs/model/logAvailability';
+import { isPluginsPageAvailable } from '@/features/plugins/pluginAvailability';
 import {
   collectPluginResourceEntries,
   PLUGIN_RESOURCES_REFRESH_EVENT,
@@ -316,6 +318,8 @@ export function MainLayout() {
 
   const fetchConfig = useConfigStore((state) => state.fetchConfig);
   const clearCache = useConfigStore((state) => state.clearCache);
+  const showLogsNav = useConfigStore((state) => isLogsPageAvailable(state.config));
+  const showPluginsNav = useConfigStore((state) => isPluginsPageAvailable(state.config));
 
   const theme = useThemeStore((state) => state.theme);
   const setTheme = useThemeStore((state) => state.setTheme);
@@ -483,7 +487,7 @@ export function MainLayout() {
   }, [fetchConfig]);
 
   const loadPluginResources = useCallback(async () => {
-    if (connectionStatus !== 'connected' || !supportsPlugin) {
+    if (connectionStatus !== 'connected' || !supportsPlugin || !showPluginsNav) {
       setPluginResources([]);
       return;
     }
@@ -494,7 +498,7 @@ export function MainLayout() {
     } catch {
       setPluginResources([]);
     }
-  }, [connectionStatus, supportsPlugin]);
+  }, [connectionStatus, supportsPlugin, showPluginsNav]);
 
   const loadAuthFilesCount = useCallback(async () => {
     const requestID = ++authFilesCountRequestRef.current;
@@ -547,7 +551,7 @@ export function MainLayout() {
     return groups;
   }, []);
 
-  const pluginPageNavItems: SidebarNavItem[] = supportsPlugin
+  const pluginPageNavItems: SidebarNavItem[] = supportsPlugin && showPluginsNav
     ? pluginResourceGroups.flatMap((group): SidebarNavItem[] => {
         if (group.entries.length === 1) {
           const resource = group.entries[0];
@@ -639,12 +643,16 @@ export function MainLayout() {
           metaKey: 'nav_meta.quota_management',
           icon: sidebarIcons.quota,
         },
-        {
-          path: '/logs',
-          labelKey: 'nav.logs',
-          metaKey: 'nav_meta.logs',
-          icon: sidebarIcons.logs,
-        },
+        ...(showLogsNav
+          ? [
+              {
+                path: '/logs',
+                labelKey: 'nav.logs',
+                metaKey: 'nav_meta.logs',
+                icon: sidebarIcons.logs,
+              },
+            ]
+          : []),
       ],
     },
     {
@@ -657,7 +665,7 @@ export function MainLayout() {
           metaKey: 'nav_meta.config_management',
           icon: sidebarIcons.config,
         },
-        ...(supportsPlugin
+        ...(supportsPlugin && showPluginsNav
           ? [
               {
                 path: '/plugins',

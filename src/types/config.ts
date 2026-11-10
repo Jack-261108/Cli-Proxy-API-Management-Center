@@ -18,6 +18,7 @@ export interface Config {
   requestLog?: boolean;
   loggingToFile?: boolean;
   logsMaxTotalSizeMb?: number;
+  pluginsEnabled?: boolean;
   wsAuth?: boolean;
   forceModelPrefix?: boolean;
   routingStrategy?: string;

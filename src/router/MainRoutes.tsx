@@ -11,10 +11,12 @@ import { PluginResourcePage } from '@/features/plugins/PluginResourcePage';
 import { PluginsPage } from '@/features/plugins/PluginsPage';
 import { ConfigPage } from '@/features/config/ConfigPage';
 import { LogsPage } from '@/features/logs/LogsPage';
+import { isLogsPageAvailable } from '@/features/logs/model/logAvailability';
+import { isPluginsPageAvailable } from '@/features/plugins/pluginAvailability';
 import { SystemPage } from '@/pages/SystemPage';
-import { useAuthStore } from '@/stores';
+import { useAuthStore, useConfigStore } from '@/stores';
 
-const createMainRoutes = (supportsPlugin: boolean) => [
+const createMainRoutes = (logsAvailable: boolean, pluginsAvailable: boolean) => [
   { path: '/', element: <DashboardPage /> },
   { path: '/dashboard', element: <DashboardPage /> },
   { path: '/settings', element: <Navigate to="/config" replace /> },
@@ -29,23 +31,28 @@ const createMainRoutes = (supportsPlugin: boolean) => [
   { path: '/oauth', element: <OAuthPage /> },
   { path: '/routing', element: <RoutingPage /> },
   { path: '/quota', element: <QuotaPage /> },
-  ...(supportsPlugin
-    ? [
-        { path: '/plugin-pages/:pluginId/:menuIndex', element: <PluginResourcePage /> },
-        { path: '/plugins', element: <PluginsPage /> },
-        { path: '/plugins/*', element: <Navigate to="/plugins" replace /> },
-      ]
-    : [
-        { path: '/plugin-pages/*', element: <Navigate to="/" replace /> },
-        { path: '/plugins/*', element: <Navigate to="/" replace /> },
-      ]),
+  ...(pluginsAvailable
+    ? [{ path: '/plugin-pages/:pluginId/:menuIndex', element: <PluginResourcePage /> }]
+    : [{ path: '/plugin-pages/*', element: <Navigate to="/" replace /> }]),
+  { path: '/plugins', element: pluginsAvailable ? <PluginsPage /> : <Navigate to="/" replace /> },
+  {
+    path: '/plugins/*',
+    element: pluginsAvailable ? (
+      <Navigate to="/plugins" replace />
+    ) : (
+      <Navigate to="/" replace />
+    ),
+  },
   { path: '/config', element: <ConfigPage /> },
-  { path: '/logs', element: <LogsPage /> },
+  { path: '/logs', element: logsAvailable ? <LogsPage /> : <Navigate to="/" replace /> },
   { path: '/system', element: <SystemPage /> },
   { path: '*', element: <Navigate to="/" replace /> },
 ];
 
 export function MainRoutes({ location }: { location?: Location }) {
   const supportsPlugin = useAuthStore((state) => state.supportsPlugin);
-  return useRoutes(createMainRoutes(supportsPlugin), location);
+  const logsAvailable = useConfigStore((state) => isLogsPageAvailable(state.config));
+  const pluginsEnabled = useConfigStore((state) => isPluginsPageAvailable(state.config));
+  const pluginsAvailable = supportsPlugin && pluginsEnabled;
+  return useRoutes(createMainRoutes(logsAvailable, pluginsAvailable), location);
 }

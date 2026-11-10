@@ -10,6 +10,7 @@ import {
   IconSidebarSystem,
 } from '@/components/ui/icons';
 import { useAuthStore } from '@/stores';
+import { isLogsPageAvailable } from '@/features/logs/model/logAvailability';
 import { useHeaderRefresh } from '@/hooks/useHeaderRefresh';
 import { formatCompactNumber, formatDateValue, formatPercent } from '@/utils/format';
 import { useDashboardOverview } from './hooks/useDashboardOverview';
@@ -42,6 +43,7 @@ export function DashboardPage() {
 
   const { connectionStatus, connected, config, counts, traffic, providers, credentials, refresh } =
     useDashboardOverview();
+  const logsAvailable = isLogsPageAvailable(config);
 
   useHeaderRefresh(refresh, connected);
 
@@ -207,12 +209,16 @@ export function DashboardPage() {
       title: t('nav.quota_management'),
       description: t('dashboard.cta_quota_desc'),
     },
-    {
-      to: '/logs',
-      icon: <IconSidebarLogs size={20} />,
-      title: t('nav.logs'),
-      description: t('dashboard.cta_logs_desc'),
-    },
+    ...(logsAvailable
+      ? [
+          {
+            to: '/logs',
+            icon: <IconSidebarLogs size={20} />,
+            title: t('nav.logs'),
+            description: t('dashboard.cta_logs_desc'),
+          },
+        ]
+      : []),
     {
       to: '/system',
       icon: <IconSidebarSystem size={20} />,
@@ -247,12 +253,14 @@ export function DashboardPage() {
             <Link to="/ai-providers" className={styles.primaryAction}>
               {t('dashboard.cta_manage_providers')}
             </Link>
-            <Link to="/logs" className={styles.ghostAction}>
-              {t('dashboard.cta_inspect_logs')}{' '}
-              <span className={styles.linkArrow} aria-hidden="true">
-                →
-              </span>
-            </Link>
+            {logsAvailable && (
+              <Link to="/logs" className={styles.ghostAction}>
+                {t('dashboard.cta_inspect_logs')}{' '}
+                <span className={styles.linkArrow} aria-hidden="true">
+                  →
+                </span>
+              </Link>
+            )}
           </div>
         </div>
 
