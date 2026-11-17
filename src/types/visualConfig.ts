@@ -88,6 +88,15 @@ export type PayloadRule = {
   params: PayloadParamEntry[];
 };
 
+export type PayloadReplaceRule = {
+  id: string;
+  models: PayloadRule['models'];
+  target: { role: string; all: boolean; positions: string };
+  replacements: { id: string; from: string; to: string }[];
+  /** Malformed source shape; clear explicitly after repairing the draft. */
+  invalid?: boolean;
+};
+
 export type PayloadFilterRule = {
   id: string;
   models: PayloadModelEntry[];
@@ -176,6 +185,10 @@ export type VisualConfigValues = {
   routingSessionAffinity: boolean;
   routingSessionAffinityTTL: string;
   wsAuth: boolean;
+  antigravitySensitiveWordsReplace: Record<string, string>;
+  devinSensitiveWordsReplace: Record<string, string>;
+  antigravitySensitivePatternsReplace: { pattern: string; replacement: string }[];
+  devinSensitivePatternsReplace: { pattern: string; replacement: string }[];
   antigravitySensitiveWords: string[];
   devinSensitiveWords: string[];
   antigravitySignatureCacheEnabled: boolean;
@@ -194,6 +207,7 @@ export type VisualConfigValues = {
   payloadOverrideRules: PayloadRule[];
   payloadOverrideRawRules: PayloadRule[];
   payloadFilterRules: PayloadFilterRule[];
+  payloadReplaceRules: PayloadReplaceRule[];
   streaming: StreamingConfig;
 };
 
@@ -275,6 +289,10 @@ export const DEFAULT_VISUAL_VALUES: VisualConfigValues = {
   routingSessionAffinity: false,
   routingSessionAffinityTTL: '',
   wsAuth: true,
+  antigravitySensitiveWordsReplace: {},
+  devinSensitiveWordsReplace: {},
+  antigravitySensitivePatternsReplace: [],
+  devinSensitivePatternsReplace: [],
   antigravitySensitiveWords: [],
   devinSensitiveWords: [],
   antigravitySignatureCacheEnabled: true,
@@ -293,6 +311,7 @@ export const DEFAULT_VISUAL_VALUES: VisualConfigValues = {
   payloadOverrideRules: [],
   payloadOverrideRawRules: [],
   payloadFilterRules: [],
+  payloadReplaceRules: [],
   streaming: {
     keepaliveSeconds: '',
     bootstrapRetries: '',

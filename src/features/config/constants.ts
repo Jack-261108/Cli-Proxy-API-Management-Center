@@ -180,6 +180,10 @@ export const FIELD_VALUE_KEYS: Record<string, readonly string[]> = {
   // ── advanced ──────────────────────────────────────────────────────────────
   quotaAntigravityCredits: ['quotaAntigravityCredits'],
   pluginsEnabled: ['pluginsEnabled'],
+  antigravitySensitiveWordsReplace: ['antigravitySensitiveWordsReplace'],
+  antigravitySensitivePatternsReplace: ['antigravitySensitivePatternsReplace'],
+  devinSensitiveWordsReplace: ['devinSensitiveWordsReplace'],
+  devinSensitivePatternsReplace: ['devinSensitivePatternsReplace'],
   antigravitySensitiveWords: ['antigravitySensitiveWords'],
   devinSensitiveWords: ['devinSensitiveWords'],
   antigravitySignatureCacheEnabled: ['antigravitySignatureCacheEnabled'],
@@ -199,6 +203,7 @@ export const FIELD_VALUE_KEYS: Record<string, readonly string[]> = {
   payloadOverrideRules: ['payloadOverrideRules'],
   payloadOverrideRawRules: ['payloadOverrideRawRules'],
   payloadFilterRules: ['payloadFilterRules'],
+  payloadReplaceRules: ['payloadReplaceRules'],
 };
 
 /** tab / tabpanel 的 DOM id：单点定义，ConfigTabs 与页面侧面板用同一函数生成 aria 关联。 */

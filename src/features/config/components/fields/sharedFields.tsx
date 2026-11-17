@@ -94,7 +94,6 @@ export function DebugToggle({ values, disabled, onChange, wide }: SharedFieldPro
       fieldId="debug"
       wide={wide}
       label={t('config_management.visual.sections.system.debug')}
-      description={t('config_management.visual.sections.system.debug_desc')}
       checked={values.debug}
       disabled={disabled}
       onChange={(debug) => onChange({ debug })}
@@ -109,7 +108,6 @@ export function LoggingToFileToggle({ values, disabled, onChange, wide }: Shared
       fieldId="loggingToFile"
       wide={wide}
       label={t('config_management.visual.sections.system.logging_to_file')}
-      description={t('config_management.visual.sections.system.logging_to_file_desc')}
       checked={values.loggingToFile}
       disabled={disabled}
       onChange={(loggingToFile) => onChange({ loggingToFile })}
