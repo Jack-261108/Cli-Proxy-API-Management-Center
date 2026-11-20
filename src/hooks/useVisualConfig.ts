@@ -822,10 +822,6 @@ function serializePayloadParamEntryValue(param: PayloadParamEntry): unknown {
   return param.value;
 }
 
-function serializeStringListForYaml(items?: string[]): string[] {
-  return (items ?? []).map((item) => item.trim()).filter(Boolean);
-}
-
 function mapPair(map: YAMLMap, key: string): Pair | undefined {
   return map.items.find((pair) => String(isScalar(pair.key) ? pair.key.value : pair.key) === key);
 }
