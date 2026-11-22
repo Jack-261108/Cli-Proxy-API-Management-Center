@@ -81,7 +81,22 @@ jobs:
               echo "conflict=true" >> $GITHUB_OUTPUT
               echo "conflict_files=$REMAINING_CONFLICTS" >> $GITHUB_OUTPUT
               echo "Unresolved code conflicts in: $REMAINING_CONFLICTS"
-              git merge --abort || true
+
+              # 不再 abort：把冲突现场推成一个分支，交给 Hermes 自动解决并开 PR。
+              # 推失败时才回退到 abort，保证工作区干净。
+              TARGET_BRANCH="sync-conflict/$(date -u +%Y%m%d-%H%M%S)"
+              if git checkout -b "$TARGET_BRANCH" >/dev/null 2>&1 \
+                 && git add -A >/dev/null 2>&1 \
+                 && git -c user.name="github-actions[bot]" \
+                       -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+                       commit -m "chore: sync upstream changes (conflicts pending auto-resolution)" >/dev/null 2>&1 \
+                 && git push -u origin "$TARGET_BRANCH" >/dev/null 2>&1; then
+                echo "conflict_branch=$TARGET_BRANCH" >> $GITHUB_OUTPUT
+                echo "已将冲突现场推送到分支 $TARGET_BRANCH，等待自动解决。"
+              else
+                echo "::warning::无法推送冲突分支，回退本次合并"
+                git merge --abort || true
+              fi
             fi
           fi
 
@@ -146,17 +161,27 @@ jobs:
           TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN || secrets.TELEGRAM_BOT_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID || secrets.TELEGRAM_CHAT_ID }}
           CONFLICT_FILES: ${{ steps.merge.outputs.conflict_files }}
+          CONFLICT_BRANCH: ${{ steps.merge.outputs.conflict_branch }}
         run: |
+          # 冲突现场已推成分支时，说明已交给自动解决流程，不再重复喊「请手动解决」。
+          if [ -n "${CONFLICT_BRANCH:-}" ]; then
+            STATUS_LINE="*状态:* 冲突已推送到分支 \`${CONFLICT_BRANCH}\`，交由自动解决流程处理。"
+            ACTION_LINE="若自动修复未开 PR，请检查分支 \`${CONFLICT_BRANCH}\`。"
+          else
+            STATUS_LINE="*状态:* 自动合并失败，存在冲突！"
+            ACTION_LINE="请及时拉取仓库手动解决冲突。"
+          fi
+
           if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
             TEXT=$(printf '%s\n\n%s\n%s\n%s\n\n%s\n```\n%s\n```\n\n%s\n\n%s' \
               "⚠️ *Cli-Proxy-API-Management-Center 同步冲突告警*" \
               "*仓库:* \`${{ github.repository }}\`" \
               "*上游:* \`router-for-me/Cli-Proxy-API-Management-Center\` (main)" \
-              "*状态:* 自动合并失败，存在冲突！" \
+              "$STATUS_LINE" \
               "*冲突文件列表:*" \
               "${CONFLICT_FILES}" \
               "🔗 [点击查看 GitHub Action 详情](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" \
-              "请及时拉取仓库手动解决冲突。")
+              "$ACTION_LINE")
 
             RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
               -d "chat_id=${TG_CHAT_ID}" \
