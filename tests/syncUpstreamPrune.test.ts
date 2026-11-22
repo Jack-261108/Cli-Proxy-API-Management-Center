@@ -112,6 +112,11 @@ const regressionTest = () => {
     const before = git(work, ['rev-parse', 'HEAD']).stdout.trim();
     git(work, ['checkout', '-q', '-b', 'upstream', m1]);
     commitFile(work, 'f.txt', 'U\n', 'UPSTREAM');
+    // The sponsor asset must exist in BOTH parents. A combined diff only lists a
+    // path when it differs from every parent: if the asset were committed only in
+    // `before`, deleting it in the merge would make it identical to `upstream` and
+    // git would omit it entirely -- the auto-discard path would never be reached.
+    commitFile(work, 'assets/sponsorQuickStart.css', 'ad\n', 'UPSTREAM SPONSOR');
     const upstream = git(work, ['rev-parse', 'HEAD']).stdout.trim();
 
     git(work, ['checkout', '-q', 'main']);
@@ -217,6 +222,25 @@ const regressionTest = () => {
     );
     git(work, ['add', '.']);
     git(work, ['commit', '-q', '--amend', '--no-edit']);
+    // A path containing a space must survive manifest parsing verbatim. If the
+    // array form were whitespace-split, `dir/a b.txt` would become two entries,
+    // grep -qxF would miss it, and the branch would go stale instead of being
+    // recognised as resolved work.
+    //
+    // Both this file and f.txt are written into the handoff merge itself (one
+    // amend), NOT as an extra commit on top: a follow-up commit whose tree
+    // matches the handoff would look like "nothing but the handoff" and be
+    // deleted by the earlier contained-in-main / handoff-only rules.
+    conflictedHandoff('sync-conflict/space-in-filename');
+    mkdirSync(join(work, 'dir'), { recursive: true });
+    writeFileSync(join(work, 'dir/a b.txt'), 'L\n');
+    writeFileSync(join(work, 'f.txt'), 'L\n');
+    writeFileSync(
+      join(work, '.sync-conflict.json'),
+      `${JSON.stringify({ upstream_sha: upstream, repo_sha_before: before, conflict_files: ['f.txt', 'dir/a b.txt'] })}\n`
+    );
+    git(work, ['add', '.']);
+    git(work, ['commit', '-q', '--amend', '--no-edit']);
 
     git(work, ['checkout', '-q', 'main']);
     git(work, ['push', '-q', 'origin', 'main']);
@@ -237,6 +261,7 @@ const regressionTest = () => {
       'sync-conflict/auto-discarded-resolved',
       'sync-conflict/take-ours-nomanifest',
       'sync-conflict/legacy-string-manifest',
+      'sync-conflict/space-in-filename',
     ]);
 
     const bin = join(root, 'bin');
@@ -300,6 +325,9 @@ const regressionTest = () => {
     // Legacy string-format manifest must still protect the take-ours resolution.
     expect(branchList).toContain('sync-conflict/legacy-string-manifest');
     expect(rowFor('sync-conflict/legacy-string-manifest')).toContain('独有提交');
+    // Path with a space: recognised as resolved work, so it is kept (not stale).
+    expect(branchList).toContain('sync-conflict/space-in-filename');
+    expect(rowFor('sync-conflict/space-in-filename')).toContain('保留');
     // P2-3: an auto-discarded sponsor file is handoff noise, not a resolution.
     expect(branchList).not.toContain('sync-conflict/auto-discarded');
     expect(branchList).toContain('sync-conflict/auto-discarded-resolved');
@@ -351,6 +379,15 @@ const fileStateTest = () => {
       if (!m) throw new Error(`no state in output: ${out.stdout}${out.stderr}`);
       return Number(m[1]);
     };
+    // Runs file_state against an arbitrary path so the "missing" and "error"
+    // branches can be reached (stateOf always writes f.txt, so it can never
+    // produce state 2 or 3).
+    const stateOfPath = (sha: string, p: string) => {
+      const out = spawnSync('bash', [harness, sha, p], { cwd: work, encoding: 'utf8' });
+      const m = /state=(\d)/.exec(out.stdout ?? '');
+      if (!m) throw new Error(`no state in output: ${out.stdout}${out.stderr}`);
+      return Number(m[1]);
+    };
 
     // 0 = unresolved, 1 = resolved/legal, 2 = deleted, 3 = error
     expect(stateOf('<<<<<<< HEAD\na\n=======\nb\n>>>>>>> upstream\n')).toBe(0);
@@ -368,6 +405,86 @@ const fileStateTest = () => {
     expect(stateOf('<<<<<<<<< HEAD\na\n=========\nb\n>>>>>>>>> upstream\n')).toBe(0);
     // diff3 conflict style carries an extra ||||||| base section.
     expect(stateOf('<<<<<<< HEAD\na\n||||||| base\nx\n=======\nb\n>>>>>>> upstream\n')).toBe(0);
+    // Trailing whitespace after the marker label is still a conflict scene.
+    expect(stateOf('<<<<<<< HEAD   \na\n=======\nb\n>>>>>>> upstream  \n')).toBe(0);
+    // state 2: the path does not exist in that tree (resolved by deletion).
+    const plainSha = commit('plain\n');
+    expect(stateOfPath(plainSha, 'gone.txt')).toBe(2);
+    // state 3: the revision itself is not a valid object -> query error, and the
+    // caller must fail closed rather than treat it as "resolved".
+    expect(stateOfPath('0000000000000000000000000000000000000000', 'f.txt')).toBe(3);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+};
+
+// A merged PR does not mean the branch head is in main: the branch name gets
+// reused, and work pushed after the merge has no PR at all. Deleting on
+// "merged PR exists" alone loses those commits. Both shapes are asserted here.
+const mergedPrRuleTest = () => {
+  const root = mkdtempSync(join(tmpdir(), 'sync-upstream-merged-'));
+  try {
+    const scenario = (tipInMain: boolean) => {
+      const dir = join(root, tipInMain ? 'in-main' : 'post-merge');
+      mkdirSync(dir, { recursive: true });
+      const origin = join(dir, 'origin.git');
+      const work = join(dir, 'work');
+      git(dir, ['init', '-q', '--bare', origin]);
+      git(origin, ['symbolic-ref', 'HEAD', 'refs/heads/main']);
+      git(dir, ['clone', '-q', origin, work]);
+      git(work, ['config', 'user.email', 't@example.com']);
+      git(work, ['config', 'user.name', 't']);
+      git(work, ['checkout', '-q', '-b', 'main']);
+      writeFileSync(join(work, 'm.txt'), 'm\n');
+      git(work, ['add', '.']);
+      git(work, ['commit', '-qm', 'm1']);
+      git(work, ['push', '-q', 'origin', 'main']);
+
+      git(work, ['checkout', '-q', '-b', 'sync-conflict/x']);
+      writeFileSync(join(work, 'a.txt'), 'A\n');
+      git(work, ['add', '.']);
+      git(work, ['commit', '-qm', 'work']);
+      if (tipInMain) {
+        git(work, ['checkout', '-q', 'main']);
+        git(work, ['merge', '-q', '--no-ff', '--no-edit', '-m', 'mrg', 'sync-conflict/x']);
+        git(work, ['push', '-q', 'origin', 'main']);
+        git(work, ['checkout', '-q', 'sync-conflict/x']);
+      }
+      git(work, ['push', '-q', 'origin', 'sync-conflict/x']);
+
+      const bin = join(dir, 'bin');
+      mkdirSync(bin);
+      // No open PR, exactly one merged PR -- the state that triggered the bug.
+      writeFileSync(
+        join(bin, 'gh'),
+        '#!/bin/bash\nurl="$2"\ncase "$url" in *state=open*) echo 0 ;; *state=closed*) echo 77 ;; esac\n'
+      );
+      chmodSync(join(bin, 'gh'), 0o755);
+
+      const prunePath = join(dir, 'prune.sh');
+      writeFileSync(prunePath, extractPruneScript());
+      const summaryPath = join(dir, 'summary.md');
+      writeFileSync(summaryPath, '');
+      const res = spawnSync('bash', ['-e', prunePath], {
+        cwd: work,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          PATH: `${bin}:${process.env.PATH ?? ''}`,
+          REPO: 'owner/repo',
+          OWNER: 'owner',
+          GH_TOKEN: 'x',
+          GITHUB_STEP_SUMMARY: summaryPath,
+        },
+      });
+      if (res.status !== 0) throw new Error(`prune failed: ${res.stderr || res.stdout}`);
+      return git(origin, ['branch', '--format=%(refname:short)']).stdout;
+    };
+
+    // Commits pushed after the merge are unmerged work -> branch must survive.
+    expect(scenario(false)).toContain('sync-conflict/x');
+    // Tip already contained in main -> safe to delete.
+    expect(scenario(true)).not.toContain('sync-conflict/x');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -375,3 +492,4 @@ const fileStateTest = () => {
 
 test('file_state treats only complete conflict blocks as unresolved', fileStateTest);
 
+test('prune keeps branches with commits pushed after a merged PR', mergedPrRuleTest);

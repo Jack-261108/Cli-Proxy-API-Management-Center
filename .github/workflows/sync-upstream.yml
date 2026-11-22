@@ -497,6 +497,13 @@ jobs:
           # diff3 风格多一行 `||||||| base`，不影响三行结构，已能识别。
           file_state() {
             local c="$1" fn="$2" rc content
+            # 先确认 commit 对象本身存在。`git rev-parse --verify -q "$c:$fn"`
+            # 对「commit 不存在」和「路径不存在」都返回 1，无法区分 ——
+            # 直接把前者当成 state 2（已删除＝成果）会让一次查询失败被当成
+            # 解冲突结果，掩盖真正的问题。所以分两步查。
+            if ! git cat-file -e "$c^{commit}" 2>/dev/null; then
+              return 3
+            fi
             if git rev-parse --verify -q "$c:$fn" >/dev/null 2>&1; then
               :
             else
@@ -554,7 +561,20 @@ jobs:
               continue
             fi
             if [ "$MERGED_COUNT" -gt 0 ]; then
-              DELETED+=("$b"$'\t'"PR merged")
+              # 有 merged PR 不等于「这个分支头的成果已进 main」：
+              # 分支名会被复用，merged 之后又推了新提交（或 merge 之后
+              # 又追加了工作）都会落到这里。此时删分支会丢掉那部分提交。
+              # 所以还要确认分支头本身已在 main；不在则保留并说明原因。
+              TIP_M="$(git rev-parse --verify -q "refs/remotes/origin/$b" 2>/dev/null || true)"
+              if [ -z "$TIP_M" ]; then
+                KEPT+=("$b"$'\t'"有 merged PR，但本地无该 ref，无法确认分支头已进 main，按保留处理")
+                continue
+              fi
+              if git merge-base --is-ancestor "$TIP_M" refs/remotes/origin/main 2>/dev/null; then
+                DELETED+=("$b"$'\t'"PR merged，分支头已在 main")
+              else
+                KEPT+=("$b"$'\t'"有 merged PR，但分支头 $(echo "$TIP_M" | cut -c1-12) 尚未进 main（merge 后又有提交）")
+              fi
               continue
             fi
 
@@ -592,17 +612,28 @@ jobs:
             # conflict_files 在旧格式里是**字符串**（可能是空格分隔的列表），
             # 新版是数组。`.[]` 对字符串返回空，会让 take-ours / delete-file
             # 的兜底失效，已解好的现场因此被误删。这里两种都接。
+            #
+            # 数组元素必须**原样保留**：路径里可能含空格（`dir/a b.txt`），
+            # 统一按空白拆行会把一个路径撕成两半，grep -qxF 永远匹配不上，
+            # 那条分支就会 stale。只有字符串形态才按空白切。
             CONFLICT_FILES=""
             if [ -n "$MANIFEST_JSON" ]; then
-              if ! CONFLICT_FILES="$(printf '%s' "$MANIFEST_JSON" \
-                     | jq -r 'if (.conflict_files | type) == "array" then (.conflict_files[] | tostring)
-                              elif (.conflict_files | type) == "string" then .conflict_files
-                              else empty end' 2>/dev/null)"; then
-                KEPT+=("$b"$'\t'"读取 manifest 的 conflict_files 失败，按保留处理")
-                continue
+              cf_type="$(printf '%s' "$MANIFEST_JSON" | jq -r '.conflict_files | type' 2>/dev/null || true)"
+              if [ "$cf_type" = "array" ]; then
+                if ! CONFLICT_FILES="$(printf '%s' "$MANIFEST_JSON" \
+                       | jq -r '.conflict_files[] | tostring' 2>/dev/null)"; then
+                  KEPT+=("$b"$'\t'"读取 manifest 的 conflict_files 失败，按保留处理")
+                  continue
+                fi
+              elif [ "$cf_type" = "string" ]; then
+                if ! CONFLICT_FILES="$(printf '%s' "$MANIFEST_JSON" \
+                       | jq -r '.conflict_files' 2>/dev/null)"; then
+                  KEPT+=("$b"$'\t'"读取 manifest 的 conflict_files 失败，按保留处理")
+                  continue
+                fi
+                # 旧格式是空格/制表符分隔的一串路径，切成多行再逐行比对
+                CONFLICT_FILES="$(printf '%s\n' "$CONFLICT_FILES" | tr ' \t' '\n\n' | sed '/^$/d')"
               fi
-              # 字符串形态按空白切成多行，后面的逐行比对才成立
-              CONFLICT_FILES="$(printf '%s\n' "$CONFLICT_FILES" | tr ' \t' '\n\n' | sed '/^$/d')"
             fi
 
             # 从分支历史里找**交接 merge**。不能只认"最近的双父提交"：
