@@ -7,7 +7,8 @@ on:
 
 permissions:
   contents: write
-  actions: write
+  # 不需要 actions: write —— 这个 workflow 从不调用 Actions API（通知里那个运行链接
+  # 只是个 URL 字符串）。多给一个写权限就多一个被滥用的面。
   # 清理步骤要查「这条分支上有没有还开着的 PR」，只读就够。
   pull-requests: read
 
@@ -340,12 +341,21 @@ jobs:
         if: steps.check.outputs.has_updates == 'true' && steps.merge.outputs.merge_ok == 'true'
         run: |
           # 纵深防御：即使上面的门控被改坏，也不允许在不该发版的状态下移动 tag。
-          # 这里再确认一次 HEAD 真的包含上游那个提交，否则只推 main、不动 tag。
-          UPSTREAM_SHA="$(git rev-parse upstream/main 2>/dev/null || true)"
-          if [ -n "$UPSTREAM_SHA" ] && ! git merge-base --is-ancestor "$UPSTREAM_SHA" HEAD 2>/dev/null; then
-            echo "::warning::HEAD 不包含 upstream/main（${UPSTREAM_SHA:0:12}），跳过 tag 推送以避免误发 release"
-            git push origin main
-            exit 0
+          # 走到这里但 HEAD 不含 upstream/main，说明 merge_ok 与仓库状态自相矛盾 ——
+          # 我们并不知道 HEAD 是什么，所以什么都不推：**fail closed**。
+          # 原来这里 push main 之后 exit 0，异常只会留在日志里；现在用 ::error::
+          # 让 run 变红，并由 mgmt-ci-autofix 那条链去查。
+          # 用 --verify：不带它时 `git rev-parse upstream/main` 在 ref 不存在时会把
+          # 字面量 "upstream/main" 打到 stdout，`|| true` 又会吞掉非零退出码，
+          # 于是变量非空、后面的报错信息还会打印半个 ref 名。
+          UPSTREAM_SHA="$(git rev-parse --verify -q upstream/main 2>/dev/null || true)"
+          if [ -z "$UPSTREAM_SHA" ]; then
+            echo "::error::无法解析 upstream/main，拒绝推送（main 与 tag 都不动）"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$UPSTREAM_SHA" HEAD 2>/dev/null; then
+            echo "::error::HEAD 不包含 upstream/main（${UPSTREAM_SHA:0:12}），拒绝推送 main 与 tag 以避免误发 release"
+            exit 1
           fi
           git push origin main
           LATEST_TAG=$(git tag -l "v*" --sort=-v:refname | head -n 1 || echo "")
@@ -403,13 +413,40 @@ jobs:
 
           declare -a KEPT=() DELETED=() REMOVED=() FAILED=()
 
+          # gh 的 stdout / stderr 必须分开接：混在一起会让错误文本被当成查询结果
+          # （"rate limit 403" 里那个 403 会被数成一条 PR，直接导致误删分支）。
+          GH_OUT="$(mktemp)"
+          GH_ERR="$(mktemp)"
+          MERGED_OUT="$(mktemp)"
+          MERGED_ERR="$(mktemp)"
+          trap 'rm -f "$GH_OUT" "$GH_ERR" "$MERGED_OUT" "$MERGED_ERR" 2>/dev/null || true' EXIT
+
           # 数组条目用 **制表符** 分隔，不用 `|`：原因里会贴 gh 的错误文本，
           # 那里面常有竖线，用 `|` 当分隔符会把原因截断。
-          # 写进 Markdown 表格前还要转义 `|`，否则一行会被拆成多列。
+          #
+          # 写进 Markdown 表格前要把表格元字符转义：
+          #   |  拆列
+          #   \  本身也要先转，否则新加的转义符会叠加
+          #   <  被当成 HTML 标签起始，表格内容会消失
+          md_escape() {
+            printf '%s' "$1" | tr '\n\t' '  ' | sed -e 's/\\/\\\\/g' -e 's/|/\\|/g' -e 's/</\\</g'
+          }
+          # 行内代码里**不能**用反斜杠转义反引号：代码 span 内的 `\` 是字面量，
+          # 反引号会立刻闭合 span（实测 `x\`y` 渲染坏掉）。含反引号时必须改用
+          # 双反引号分隔并留空格 —— CommonMark 规定 N 个反引号的分隔符内部
+          # 允许出现少于 N 个连续反引号。分支名里反引号是合法的，必须处理。
+          code_span() {
+            case "$1" in
+              *'`'*) printf '`` %s ``' "$1" ;;
+              *)     printf '`%s`' "$1" ;;
+            esac
+          }
           row() {
-            local branch="$1" reason="$2" tag="$3"
-            reason="$(printf '%s' "$reason" | tr '\n\t' '  ' | sed 's/|/\\|/g')"
-            printf '| `%s` | %s：%s |\n' "$branch" "$tag" "$reason"
+            local branch reason tag
+            branch="$(code_span "$(md_escape "$1")")"
+            reason="$(md_escape "$2")"
+            tag="$3"
+            printf '| %s | %s：%s |\n' "$branch" "$tag" "$reason"
           }
 
           # 数字校验：gh 成功但输出不是数字（被改动过的响应）也算未知。
@@ -424,13 +461,14 @@ jobs:
             [ -z "$b" ] && continue
 
             # 第 1 步：有 open PR 就保留 —— 必须排在 merged 之前。
-            if ! OPEN_COUNT="$(gh api "repos/$REPO/pulls?state=open&head=$OWNER:$b&per_page=1" \
-                                 --jq 'length' 2>&1)"; then
-              KEPT+=("$b"$'\t'"PR 状态未知（open 查询失败），按保留处理：$(echo "$OPEN_COUNT" | head -c 200)")
+            if ! gh api "repos/$REPO/pulls?state=open&head=$OWNER:$b&per_page=1" \
+                 --jq 'length' > "$GH_OUT" 2> "$GH_ERR"; then
+              KEPT+=("$b"$'\t'"PR 状态未知（open 查询失败），按保留处理：$(head -c 200 "$GH_ERR")")
               continue
             fi
+            OPEN_COUNT="$(tr -d '\n' < "$GH_OUT")"
             if ! is_count "$OPEN_COUNT"; then
-              KEPT+=("$b"$'\t'"PR 状态未知（open 输出异常：$(echo "$OPEN_COUNT" | head -c 80)），按保留处理")
+              KEPT+=("$b"$'\t'"PR 状态未知（open 输出异常：$(head -c 80 "$GH_OUT")），按保留处理")
               continue
             fi
             if [ "$OPEN_COUNT" -gt 0 ]; then
@@ -438,13 +476,18 @@ jobs:
               continue
             fi
 
-            # 第 2 步：确认存在已合并的 PR。per_page=100 是单页上限，避免
-            # 「第 11 条才是 merged」时漏判。
-            if ! MERGED_COUNT="$(gh api "repos/$REPO/pulls?state=closed&head=$OWNER:$b&per_page=100" \
-                                  --jq '[.[] | select(.merged_at != null)] | length' 2>&1)"; then
-              KEPT+=("$b"$'\t'"PR 状态未知（merged 查询失败），按保留处理：$(echo "$MERGED_COUNT" | head -c 200)")
+            # 第 2 步：确认存在已合并的 PR。
+            # 用 --paginate + 逐条输出再计数，而不是只取一页：同一分支被反复
+            # 用作交接分支时 closed PR 可能超过 100 条，「第 101 条才是 merged」
+            # 就会漏判。gh 2.46 没有 --slurp，所以让 --jq 每条输出一行再本地数。
+            if ! gh api "repos/$REPO/pulls?state=closed&head=$OWNER:$b&per_page=100" \
+                 --paginate \
+                 --jq '.[] | select(.merged_at != null) | .number' \
+                 > "$MERGED_OUT" 2> "$MERGED_ERR"; then
+              KEPT+=("$b"$'\t'"PR 状态未知（merged 查询失败），按保留处理：$(head -c 200 "$MERGED_ERR")")
               continue
             fi
+            MERGED_COUNT="$(wc -l < "$MERGED_OUT" | tr -d ' ')"
             if ! is_count "$MERGED_COUNT"; then
               KEPT+=("$b"$'\t'"PR 状态未知（merged 输出异常），按保留处理")
               continue
@@ -465,15 +508,50 @@ jobs:
               continue
             fi
 
-            # manifest 里的 upstream_sha 进了 main，说明这次冲突要跟的上游状态
-            # 已经由后来的同步解决了，现场过期。manifest 缺失时退回第二个父提交。
+            # manifest 里的 upstream_sha 进了 main，只能说明「上游那半个现场已经
+            # 跟上了」，**不能**说明这条分支上的解冲突成果已经进 main。实测过反例：
+            # 分支上带有唯一的解冲突提交，upstream_sha 也因为另一次合并在 main 里，
+            # 只看 SHA 会把这个提交连同它的推理一起删掉，远端不留副本。
+            # 所以规则 3 必须再加一条：分支相对 main 没有独有内容
+            # （`git cherry` 没有 '+' 行 = main 已包含它的全部改动）。
             UP="$(git show "refs/remotes/origin/$b:.sync-conflict.json" 2>/dev/null \
                   | jq -r '.upstream_sha // empty' 2>/dev/null || true)"
             if [ -z "$UP" ]; then
-              UP="$(git rev-parse "$TIP^2" 2>/dev/null || true)"
+              UP="$(git rev-parse --verify -q "$TIP^2" 2>/dev/null || true)"
             fi
             if [ -n "$UP" ] && git merge-base --is-ancestor "$UP" refs/remotes/origin/main 2>/dev/null; then
-              DELETED+=("$b"$'\t'"upstream $(echo "$UP" | cut -c1-12) already in main")
+              # 上游已跟上，但这还不能删：manifest 的 upstream_sha 只说明「上游那半个
+              # 现场已被跟上」，不说明这条分支上的解冲突成果进了 main。实测过反例：
+              # 分支带唯一解冲突提交，upstream_sha 也因另一次合并在 main 里，只看 SHA
+              # 会连提交带推理一起删掉，远端不留副本。
+              #
+              # 只在「分支没有任何 main 之外的实质提交」时才删。tip 已包含在 main 的
+              # 情况上面已处理过，这里统计的是真正的独有提交数。
+              # 要排除交接自身产生的提交（manifest / handoff 消息）：它们本来就只在
+              # 冲突分支上，算进去会导致永远不删。
+              UNIQUE_TREE=0
+              while IFS= read -r c; do
+                [ -z "$c" ] && continue
+                # 交接 manifest 提交：只改 .sync-conflict.json，不算实质改动
+                files="$(git show --pretty=format: --name-only "$c" 2>/dev/null | sed '/^$/d' || true)"
+                if [ -n "$files" ] && [ -z "$(printf '%s\n' "$files" | grep -v '^\.sync-conflict\.json$' || true)" ]; then
+                  continue
+                fi
+                # 纯交接合并提交（两个父提交、无自带改动）
+                if [ "$(git rev-list --parents -n1 "$c" 2>/dev/null | wc -w)" -gt 2 ]; then
+                  base_files="$(git show --pretty=format: --name-only "$c" 2>/dev/null | sed '/^$/d' || true)"
+                  if [ -z "$base_files" ]; then
+                    continue
+                  fi
+                fi
+                UNIQUE_TREE=$((UNIQUE_TREE + 1))
+              done <<< "$(git rev-list --no-merges "$TIP" --not refs/remotes/origin/main 2>/dev/null || true)"
+
+              if [ "$UNIQUE_TREE" -gt 0 ]; then
+                KEPT+=("$b"$'\t'"upstream $(echo "$UP" | cut -c1-12) 已在 main，但分支还有 $UNIQUE_TREE 个独有提交")
+                continue
+              fi
+              DELETED+=("$b"$'\t'"upstream $(echo "$UP" | cut -c1-12) 已在 main，且只剩交接提交")
               continue
             fi
 
