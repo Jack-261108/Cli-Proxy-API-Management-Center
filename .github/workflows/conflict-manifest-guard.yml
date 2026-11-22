@@ -1,0 +1,37 @@
+name: Conflict Manifest Guard
+
+# `Sync Upstream` 在冲突时把一个机读交接文件 .sync-conflict.json 提交进
+# sync-conflict/* 分支。它只用于交接，不属于仓库内容：留在 PR 里会让每个 PR
+# 都带上内部 SHA，并随发布产物流出去。
+#
+# 这条规则写进交接文档和 manifest.requirements 只是「说明」，人可以不看。
+# 这里做成 CI 门禁：PR 里出现这个文件就红。
+#
+# 单独放在一个 workflow 文件里，而不是塞进 ci.yml —— 上游会改 ci.yml，
+# 我们的改动迟早撞上合并冲突，而这条守卫本身不应该成为冲突源。
+
+on:
+  pull_request:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Reject the conflict handoff manifest
+        run: |
+          if git ls-files --error-unmatch .sync-conflict.json >/dev/null 2>&1; then
+            echo "::error file=.sync-conflict.json::冲突交接文件不能进 PR —— 它只是给解决方看的机读现场。"
+            echo "删除后再提交："
+            echo "  git rm -f .sync-conflict.json"
+            echo "  git commit -m 'chore: drop conflict handoff manifest'"
+            echo "约定见 .github/sync-conflict-handoff.md"
+            exit 1
+          fi
+          echo "没有 .sync-conflict.json，通过。"
