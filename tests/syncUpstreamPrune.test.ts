@@ -101,9 +101,6 @@ const regressionTest = () => {
     // both parents are already in main, so this branch must be kept.
     handoff('sync-conflict/merge-only', zMerge);
 
-    // A real conflicted handoff: the handoff merge itself carries the conflict
-    // markers. It must be recognized and skipped; otherwise the markers look
-    // like unique content and an obsolete branch is never pruned.
     git(work, ['checkout', '-q', '-b', 'before', m1]);
     commitFile(work, 'f.txt', 'L\n', 'BEFORE');
     const before = git(work, ['rev-parse', 'HEAD']).stdout.trim();
@@ -118,50 +115,55 @@ const regressionTest = () => {
     git(work, ['add', 'f.txt']);
     git(work, ['commit', '-q', '--no-edit']);
 
-    git(work, ['checkout', '-q', '-b', 'sync-conflict/real-handoff', before]);
-    git(work, ['merge', '--no-ff', 'upstream', '-m', 'handoff'], true);
-    git(work, ['add', '-A']);
-    git(work, ['commit', '-q', '-m', 'handoff']);
-    writeFileSync(
-      join(work, '.sync-conflict.json'),
-      `${JSON.stringify({ upstream_sha: upstream, repo_sha_before: before })}\n`
-    );
-    git(work, ['add', '.']);
-    git(work, ['commit', '-q', '--amend', '--no-edit']);
+    // Creates the conflicted handoff merge (markers + manifest). The manifest
+    // lists f.txt in conflict_files, like the workflow's real handoff.
+    const conflictedHandoff = (branch: string) => {
+      git(work, ['checkout', '-q', '-b', branch, before]);
+      git(work, ['merge', '--no-ff', 'upstream', '-m', 'handoff'], true);
+      git(work, ['add', '-A']);
+      git(work, ['commit', '-q', '-m', 'handoff']);
+      writeFileSync(
+        join(work, '.sync-conflict.json'),
+        `${JSON.stringify({
+          upstream_sha: upstream,
+          repo_sha_before: before,
+          conflict_files: ['f.txt'],
+        })}\n`
+      );
+      git(work, ['add', '.']);
+      git(work, ['commit', '-q', '--amend', '--no-edit']);
+    };
+    const amendHandoff = (content: string | null, removeManifest = false) => {
+      if (content !== null) {
+        writeFileSync(join(work, 'f.txt'), content);
+        git(work, ['add', 'f.txt']);
+      }
+      if (removeManifest) git(work, ['rm', '-q', '.sync-conflict.json']);
+      git(work, ['commit', '-q', '--amend', '--no-edit']);
+    };
 
-    // Resolution amended into the handoff merge itself, manifest kept: the
-    // diff-tree still lists f.txt, but it no longer has markers, so it must be
-    // kept.
-    git(work, ['checkout', '-q', '-b', 'sync-conflict/amended-handoff', before]);
-    git(work, ['merge', '--no-ff', 'upstream', '-m', 'handoff'], true);
-    git(work, ['add', '-A']);
-    git(work, ['commit', '-q', '-m', 'handoff']);
-    writeFileSync(
-      join(work, '.sync-conflict.json'),
-      `${JSON.stringify({ upstream_sha: upstream, repo_sha_before: before })}\n`
-    );
-    git(work, ['add', '.']);
+    // Unresolved scene: complete markers, must be deleted.
+    conflictedHandoff('sync-conflict/real-handoff');
+    // Resolution amended into the handoff merge, manifest kept, must be kept.
+    conflictedHandoff('sync-conflict/amended-manifest');
+    amendHandoff('R\n');
+    // Same, manifest removed during the amend, must be kept.
+    conflictedHandoff('sync-conflict/amended-nomanifest');
+    amendHandoff('R2\n', true);
+    // Setext heading underline is not a conflict marker.
+    conflictedHandoff('sync-conflict/setext');
+    amendHandoff('Title\n=======\n');
+    // A lone <<<<<<< example is not a complete conflict block.
+    conflictedHandoff('sync-conflict/marker-text');
+    amendHandoff('<<<<<<< example\n');
+    // Deleted during resolution: the deletion is the resolution result.
+    conflictedHandoff('sync-conflict/delete-file');
+    git(work, ['rm', '-q', 'f.txt']);
     git(work, ['commit', '-q', '--amend', '--no-edit']);
-    writeFileSync(join(work, 'f.txt'), 'R\n');
-    git(work, ['add', 'f.txt']);
-    git(work, ['commit', '-q', '--amend', '--no-edit']);
-
-    // Same, but the manifest is removed during the amend. The message is still
-    // "handoff" and f.txt has no markers, so it must be kept.
-    git(work, ['checkout', '-q', '-b', 'sync-conflict/amended-handoff-no-manifest', before]);
-    git(work, ['merge', '--no-ff', 'upstream', '-m', 'handoff'], true);
-    git(work, ['add', '-A']);
-    git(work, ['commit', '-q', '-m', 'handoff']);
-    writeFileSync(
-      join(work, '.sync-conflict.json'),
-      `${JSON.stringify({ upstream_sha: upstream, repo_sha_before: before })}\n`
-    );
-    git(work, ['add', '.']);
-    git(work, ['commit', '-q', '--amend', '--no-edit']);
-    writeFileSync(join(work, 'f.txt'), 'R2\n');
-    git(work, ['add', 'f.txt']);
-    git(work, ['rm', '-q', '.sync-conflict.json']);
-    git(work, ['commit', '-q', '--amend', '--no-edit']);
+    // take-ours: the result equals the first parent, so diff-tree -c omits it;
+    // the manifest's conflict_files must still catch it.
+    conflictedHandoff('sync-conflict/take-ours');
+    amendHandoff('L\n');
 
     git(work, ['checkout', '-q', 'main']);
     git(work, ['push', '-q', 'origin', 'main']);
@@ -172,8 +174,12 @@ const regressionTest = () => {
       'sync-conflict/only-handoff',
       'sync-conflict/merge-only',
       'sync-conflict/real-handoff',
-      'sync-conflict/amended-handoff',
-      'sync-conflict/amended-handoff-no-manifest',
+      'sync-conflict/amended-manifest',
+      'sync-conflict/amended-nomanifest',
+      'sync-conflict/setext',
+      'sync-conflict/marker-text',
+      'sync-conflict/delete-file',
+      'sync-conflict/take-ours',
     ]);
 
     const bin = join(root, 'bin');
@@ -206,21 +212,30 @@ const regressionTest = () => {
     }
 
     const branches = git(origin, ['branch', '--format=%(refname:short)']).stdout;
-    expect(branches).toContain('sync-conflict/merge-only');
-    expect(branches).toContain('sync-conflict/amended-handoff');
-    expect(branches).toContain('sync-conflict/amended-handoff-no-manifest');
-    expect(branches).not.toContain('sync-conflict/only-handoff');
-    expect(branches).not.toContain('sync-conflict/real-handoff');
+    const branchList = branches.split('\n').map((line) => line.trim());
+    expect(branchList).toContain('sync-conflict/merge-only');
+    expect(branchList).toContain('sync-conflict/amended-manifest');
+    expect(branchList).toContain('sync-conflict/amended-nomanifest');
+    expect(branchList).toContain('sync-conflict/setext');
+    expect(branchList).toContain('sync-conflict/marker-text');
+    expect(branchList).toContain('sync-conflict/delete-file');
+    expect(branchList).toContain('sync-conflict/take-ours');
+    expect(branchList).not.toContain('sync-conflict/only-handoff');
+    expect(branchList).not.toContain('sync-conflict/real-handoff');
 
     // These shapes differ only in content, never in parent SHAs, so assert on
     // the reason text too: a resolution folded into the handoff merge must be
     // reported as unique work, and a markers-only handoff must not.
     const summary = readFileSync(summaryPath, 'utf8');
     const rowFor = (name: string) =>
-      summary.split('\n').find((line) => line.startsWith('| `') && line.includes(name)) ?? '';
+      summary.split('\n').find((line) => line.includes(`| \`${name}\` |`)) ?? '';
     expect(rowFor('sync-conflict/merge-only')).toContain('独有提交');
-    expect(rowFor('sync-conflict/amended-handoff')).toContain('独有提交');
-    expect(rowFor('sync-conflict/amended-handoff-no-manifest')).toContain('独有提交');
+    expect(rowFor('sync-conflict/amended-manifest')).toContain('独有提交');
+    expect(rowFor('sync-conflict/amended-nomanifest')).toContain('独有提交');
+    expect(rowFor('sync-conflict/setext')).toContain('独有提交');
+    expect(rowFor('sync-conflict/marker-text')).toContain('独有提交');
+    expect(rowFor('sync-conflict/delete-file')).toContain('独有提交');
+    expect(rowFor('sync-conflict/take-ours')).toContain('独有提交');
     expect(rowFor('sync-conflict/real-handoff')).toContain('已删除');
     expect(rowFor('sync-conflict/only-handoff')).toContain('已删除');
     expect(summary).toContain('保留');

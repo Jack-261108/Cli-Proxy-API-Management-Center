@@ -478,6 +478,32 @@ jobs:
             return 0
           }
 
+          # 判断合并树里某个文件的状态（区分「未解现场」和「已解成果」）：
+          #   0 = 仍含完整冲突块（^<<<<<<< 且 ^>>>>>>>）
+          #   1 = 无完整冲突块（已解；单独的 ======= 或 <<<<<<< 不算）
+          #   2 = 路径不存在（解冲突时删除，属成果）
+          #   3 = 查询错误（调用方 fail closed）
+          file_state() {
+            local c="$1" fn="$2" rc content
+            if git rev-parse --verify -q "$c:$fn" >/dev/null 2>&1; then
+              :
+            else
+              rc=$?
+              if [ "$rc" -eq 1 ]; then
+                return 2
+              fi
+              return 3
+            fi
+            if ! content="$(git show "$c:$fn" 2>/dev/null)"; then
+              return 3
+            fi
+            if printf '%s\n' "$content" | grep -q '^<<<<<<< ' \
+               && printf '%s\n' "$content" | grep -q '^>>>>>>> '; then
+              return 0
+            fi
+            return 1
+          }
+
           while IFS= read -r b; do
             [ -z "$b" ] && continue
 
@@ -538,6 +564,7 @@ jobs:
             # 所以规则 3 必须再加一条：分支相对 main 没有独有内容。
             MANIFEST_JSON="$(git show "refs/remotes/origin/$b:.sync-conflict.json" 2>/dev/null || true)"
             UP="$(printf '%s' "$MANIFEST_JSON" | jq -r '.upstream_sha // empty' 2>/dev/null || true)"
+            CONFLICT_FILES="$(printf '%s' "$MANIFEST_JSON" | jq -r '.conflict_files[]? // empty' 2>/dev/null || true)"
             if [ -z "$UP" ]; then
               UP="$(git rev-parse --verify -q "$TIP^2" 2>/dev/null || true)"
             fi
@@ -573,7 +600,7 @@ jobs:
                   SCAN_FAILED=1
                   break
                 fi
-                read -r csha p1 p2 _rest <<< "$PARENTS"
+                read -r _csha _p1 p2 _rest <<< "$PARENTS"
                 if [ -n "${p2:-}" ]; then
                   if ! own="$(git diff-tree -c --no-commit-id --name-only -r "$c" 2>/dev/null)"; then
                     SCAN_FAILED=1
@@ -584,22 +611,31 @@ jobs:
                     # 没有自己的改动 = 纯交接 merge（上游那一半），跳过
                     continue
                   fi
-                  # 有改动：区分「还留着冲突标记」和「已经被解掉」
+                  # 有改动：逐个文件判断是否仍是「未解现场」。
+                  # 只有完整冲突块（<<<<<<< + >>>>>>>）才算未解；
+                  # 单独的 =======（Markdown Setext）或 <<<<<<< 示例不算。
                   resolved=0
-                  unresolved=0
                   while IFS= read -r fn; do
                     [ -z "$fn" ] && continue
                     case "$fn" in .sync-conflict.json) continue ;; esac
-                    if ! CONTENT="$(git show "$c:$fn" 2>/dev/null)"; then
-                      SCAN_FAILED=1
-                      break 2
-                    fi
-                    if printf '%s\n' "$CONTENT" | grep -qE '^(<<<<<<< |=======$|>>>>>>> )'; then
-                      unresolved=$((unresolved + 1))
-                    else
-                      resolved=$((resolved + 1))
-                    fi
+                    if file_state "$c" "$fn"; then fs=0; else fs=$?; fi
+                    case "$fs" in
+                      1|2) resolved=1 ;;
+                      3) SCAN_FAILED=1; break 2 ;;
+                    esac
                   done <<< "$own"
+                  # take-ours 形态：结果等于某一父，diff-tree -c 不会列出该文件。
+                  # 用 manifest 的 conflict_files 再逐文件核对 merge tree。
+                  if [ "$resolved" -eq 0 ] && [ -n "$CONFLICT_FILES" ]; then
+                    while IFS= read -r fn; do
+                      [ -z "$fn" ] && continue
+                      if file_state "$c" "$fn"; then fs=0; else fs=$?; fi
+                      case "$fs" in
+                        1|2) resolved=1; break ;;
+                        3) SCAN_FAILED=1; break 2 ;;
+                      esac
+                    done <<< "$CONFLICT_FILES"
+                  fi
                   if [ "$resolved" -gt 0 ]; then
                     UNIQUE_TREE=$((UNIQUE_TREE + 1))
                   fi
@@ -614,7 +650,20 @@ jobs:
                     # 空提交没有实质内容
                     continue
                   fi
-                  if [ -z "$(printf '%s\n' "$files" | grep -v '^\.sync-conflict\.json$' || true)" ]; then
+                  # 区分 grep 的 exit 1（没有非 manifest 文件，正常）和 2/127（错误）
+                  if FILTERED="$(printf '%s\n' "$files" | grep -v '^\.sync-conflict\.json$')"; then
+                    GREP_RC=0
+                  else
+                    GREP_RC=$?
+                  fi
+                  if [ "$GREP_RC" -eq 1 ]; then
+                    continue
+                  fi
+                  if [ "$GREP_RC" -ne 0 ]; then
+                    SCAN_FAILED=1
+                    break
+                  fi
+                  if [ -z "$FILTERED" ]; then
                     continue
                   fi
                   UNIQUE_TREE=$((UNIQUE_TREE + 1))
