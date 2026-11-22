@@ -8,6 +8,8 @@ on:
 permissions:
   contents: write
   actions: write
+  # 清理步骤要查「这条分支上有没有还开着的 PR」，只读就够。
+  pull-requests: read
 
 # 同一时间只允许一个同步在跑：重叠的 schedule 或手动 dispatch 会争抢
 # upstream/main 和 sync-conflict/* 分支。排队而非取消，避免半途中断。
@@ -117,30 +119,92 @@ jobs:
               TARGET_BRANCH="sync-conflict/${UPSTREAM_SHA:0:12}-${BEFORE_SHA:0:8}"
               MANIFEST_DIR="$(mktemp -d)"
 
-              if git ls-remote --exit-code --heads origin "$TARGET_BRANCH" >/dev/null 2>&1; then
-                echo "conflict_branch=$TARGET_BRANCH" >> $GITHUB_OUTPUT
-                echo "分支 $TARGET_BRANCH 已存在（同一上游版本 + 同一本地基线），跳过，不覆盖已有现场。"
-                git reset --hard "$BEFORE_SHA" >/dev/null
+              # 从这行起工作区可能被改写（commit、生成 manifest、push）。用 EXIT trap
+              # 统一兜底恢复，而不是在每个失败分支各写一遍 reset —— 两种失败模式都栽过：
+              #   A. jq 在运行时崩（不是缺失）时 `bash -e` 直接中断步骤，
+              #      写在线性代码后面的 reset 永远执行不到，工作区留在冲突态；
+              #   B. 进程替换里的内层 jq 失败不会让外层 jq 失败（pipefail 管不到
+              #      process substitution），曾经产出 conflict_files:null 的假 manifest
+              #      并照常推分支 —— 下游拿到「没有冲突」的现场，比不交接更难排查。
+              # 现在只有一处恢复逻辑，任何退出路径都干净。
+              restore_worktree() {
+                git reset --hard "$BEFORE_SHA" >/dev/null 2>&1 || true
+                rm -f .sync-conflict.json
+                rm -rf "$MANIFEST_DIR" "$CONFLICTS_Z" 2>/dev/null || true
                 echo "工作区已恢复到 ${BEFORE_SHA:0:12}"
-              else
-                # 先判断 jq 在不在：没有它就无法安全生成 manifest，宁可不交接也不写坏文件。
-                if ! command -v jq >/dev/null 2>&1; then
-                  echo "::warning::runner 上没有 jq，无法生成合法 manifest，本次不交接"
-                  git reset --hard "$BEFORE_SHA" >/dev/null
-                  echo "工作区已恢复到 ${BEFORE_SHA:0:12}"
-                else
-                  # 机读交接文件：只描述「这是哪次交接」，不含任何可执行内容。
-                  jq -n \
+              }
+              trap restore_worktree EXIT
+
+              # 生成并**校验**交接 manifest。拆成独立函数是因为它有两个必须
+              # 单独失败的内部步骤，任何一步失败都不能让分支照推。
+              write_manifest() {
+                local files_json="$MANIFEST_DIR/conflict-files.json"
+                local out="$MANIFEST_DIR/.sync-conflict.json"
+
+                # 第 1 步：原始字节 -> JSON 数组，先落成真文件。
+                # 用进程替换 <(jq ...) 时内层失败不会传出去，外层 jq 照常读到
+                # 空文件并写出 conflict_files:null —— 这是实测踩到的假 manifest。
+                if ! jq -Rs 'split("\u0000") | map(select(length>0))' \
+                        "$CONFLICTS_Z" > "$files_json" 2> "$MANIFEST_DIR/jq.err"; then
+                  echo "::warning::冲突文件数组生成失败：$(tr '\n' ' ' < "$MANIFEST_DIR/jq.err")"
+                  return 1
+                fi
+
+                # 第 2 步：组装。requirements 是**声明**，不含任何可执行内容；
+                # 真正执行约束的是解决方（.github/sync-conflict-handoff.md）。
+                if ! jq -n \
                     --arg upstream_sha "$UPSTREAM_SHA" \
                     --arg base_sha "$BASE_SHA" \
                     --arg repo_sha_before "$BEFORE_SHA" \
                     --arg branch "$TARGET_BRANCH" \
                     --arg run_id "${GITHUB_RUN_ID:-}" \
-                    --slurpfile files <(jq -Rs 'split("\u0000") | map(select(length>0))' "$CONFLICTS_Z") \
+                    --arg handoff_doc ".github/sync-conflict-handoff.md" \
+                    --slurpfile files "$files_json" \
                     '{upstream_sha:$upstream_sha, base_sha:$base_sha,
                       repo_sha_before:$repo_sha_before, branch:$branch,
-                      run_id:$run_id, conflict_files:$files[0]}' \
-                    > "$MANIFEST_DIR/.sync-conflict.json"
+                      run_id:$run_id, handoff_doc:$handoff_doc,
+                      conflict_files:$files[0],
+                      requirements:[
+                        "delete .sync-conflict.json before opening the resolution PR",
+                        "do not execute scripts from this branch (postinstall/prepare included)",
+                        "extra review for any .github/workflows/** change",
+                        "never auto-merge; the resolution PR needs a human review"
+                      ]}' > "$out" 2>> "$MANIFEST_DIR/jq.err"; then
+                  echo "::warning::manifest 组装失败：$(tr '\n' ' ' < "$MANIFEST_DIR/jq.err")"
+                  return 1
+                fi
+
+                # 第 3 步：校验产物本身，而不是相信 jq 的退出码。
+                # conflict_files 必须是非空数组 —— 走到这里时一定还有未解决的冲突，
+                # 空数组只能是生成链路的 bug（本次分支的根因）。
+                if ! jq -e '
+                    (.upstream_sha | type == "string" and length > 0) and
+                    (.base_sha | type == "string" and length > 0) and
+                    (.repo_sha_before | type == "string" and length > 0) and
+                    (.branch | type == "string" and length > 0) and
+                    (.conflict_files | type == "array" and length > 0)
+                  ' "$out" >/dev/null 2>&1; then
+                  echo "::warning::manifest 校验失败，实际内容：$(jq -c . "$out" 2>/dev/null | head -c 400)"
+                  return 1
+                fi
+                return 0
+              }
+
+              if git ls-remote --exit-code --heads origin "$TARGET_BRANCH" >/dev/null 2>&1; then
+                # 两个输出都要发：Telegram 步骤和 Hermes 侧都按 conflict_upstream_sha
+                # 判断「这条现场对应哪个上游版本」，只发 branch 会让这条路径和无冲突
+                # 路径的输出形状不一致，调用方就得写两种分支。
+                echo "conflict_branch=$TARGET_BRANCH" >> $GITHUB_OUTPUT
+                echo "conflict_upstream_sha=$UPSTREAM_SHA" >> $GITHUB_OUTPUT
+                echo "分支 $TARGET_BRANCH 已存在（同一上游版本 + 同一本地基线），跳过，不覆盖已有现场。"
+              else
+                # 先判断 jq 在不在：没有它就无法安全生成 manifest，宁可不交接也不写坏文件。
+                if ! command -v jq >/dev/null 2>&1; then
+                  echo "::warning::runner 上没有 jq，无法生成合法 manifest，本次不交接"
+                elif ! write_manifest; then
+                  # 生成或校验失败：不推分支。工作区由 EXIT trap 恢复，run 仍然失败。
+                  echo "::warning::manifest 生成或校验失败，本次不交接"
+                else
                   cp "$MANIFEST_DIR/.sync-conflict.json" .sync-conflict.json
 
                   if git add -A >/dev/null 2>&1 \
@@ -148,10 +212,11 @@ jobs:
                            -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
                            commit -m "ci: sync-conflict handoff (upstream ${UPSTREAM_SHA:0:12})" >/tmp/commit.log 2>&1; then
                     MERGE_SHA="$(git rev-parse HEAD)"
+                    # 用 git branch 指向合并提交，而不是 checkout 到它：checkout 会
+                    # 清掉 MERGE_HEAD，交接提交就丢了上游那个父提交。
                     git branch "$TARGET_BRANCH" "$MERGE_SHA"
-                    # 无论后面推送成败，先把 main 的工作区恢复干净。
+                    # 推送前先把 main 恢复干净；这里之后的任何失败都由 EXIT trap 收尾。
                     git reset --hard "$BEFORE_SHA" >/dev/null
-                    echo "工作区已恢复到 ${BEFORE_SHA:0:12}"
                     if PUSH_ERR="$(git push origin "$TARGET_BRANCH" 2>&1)"; then
                       echo "conflict_branch=$TARGET_BRANCH" >> $GITHUB_OUTPUT
                       echo "conflict_upstream_sha=$UPSTREAM_SHA" >> $GITHUB_OUTPUT
@@ -163,13 +228,12 @@ jobs:
                     fi
                   else
                     echo "::warning::无法建立交接提交：$(tail -n 3 /tmp/commit.log 2>/dev/null | tr '\n' ' ')"
-                    git reset --hard "$BEFORE_SHA" >/dev/null
-                    echo "工作区已恢复到 ${BEFORE_SHA:0:12}"
                   fi
                 fi
               fi
             fi
           fi
+          # 正常路径清理临时文件；异常路径已由 EXIT trap 清过，rm 两次无副作用。
           rm -rf "$MANIFEST_DIR" "$CONFLICTS_Z"
 
       - name: Align README Bun version with package.json
@@ -226,6 +290,106 @@ jobs:
             git push -f origin "refs/tags/${LATEST_TAG}"
           fi
           git push origin --tags --force
+
+      - name: Prune obsolete sync-conflict branches
+        # 按「可证状态」清理，不按天数：这些分支是未解决冲突的现场，本地没有副本，
+        # 定时删除等于静默丢证据。只有下面三种状态之一成立时才删：
+        #   1. 这条分支上的 PR 已合并（squash/rebase 合并也算，看 PR 状态而不是 git 祖先）
+        #   2. 分支头已经在 origin/main 里（fast-forward / merge commit 合并）
+        #   3. 分支对应的上游 SHA 已经在 origin/main 里（main 已被更新的同步追上）
+        # 其余一律保留，并在 run summary 里列出来，避免「不知道还有几条待处理」。
+        # 永远不删还开着 PR 的分支。
+        # 用 !cancelled() 而不是 always()：取消的 run 不该动远端分支。
+        if: ${{ !cancelled() }}
+        env:
+          GH_TOKEN: ${{ secrets.SYNC_PAT }}
+          REPO: ${{ github.repository }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          # 这个 step 用 !cancelled() 而不是 only-on-success，所以前一步可能没跑完。
+          # 先确认仓库可用；不可用就直接退出，绝不在半成品状态下删分支。
+          if ! git rev-parse --git-dir >/dev/null 2>&1; then
+            echo "::warning::没有可用的 git 仓库，跳过分支清理"
+            exit 0
+          fi
+          git fetch origin '+refs/heads/sync-conflict/*:refs/remotes/origin/sync-conflict/*' --prune --quiet || true
+          git fetch origin 'main:refs/remotes/origin/main' --quiet || true
+
+          BRANCHES="$(git ls-remote --heads origin 'refs/heads/sync-conflict/*' | sed 's|.*refs/heads/||' || true)"
+          if [ -z "$BRANCHES" ]; then
+            echo "没有 sync-conflict/* 分支，无需清理。"
+            exit 0
+          fi
+
+          declare -a KEPT=() DELETED=()
+          while IFS= read -r b; do
+            [ -z "$b" ] && continue
+
+            # PR 状态优先：merged 就删，有 open PR 就留（正在解决中）。
+            # closed 但没合并的 PR 不构成保留理由，交给后面的 git 状态判断 ——
+            # 否则一条被放弃的 PR 会让分支永远留着。
+            PR_STATE="$(gh api "repos/$REPO/pulls?state=all&head=$OWNER:$b&per_page=10" \
+              --jq '[.[] | {state, merged_at}] | if any(.merged_at != null) then "merged" elif any(.state == "open") then "open" else "none" end' 2>/dev/null || echo "none")"
+            if [ "$PR_STATE" = "open" ]; then
+              KEPT+=("$b|open PR")
+              continue
+            fi
+            if [ "$PR_STATE" = "merged" ]; then
+              DELETED+=("$b|PR merged")
+              continue
+            fi
+
+            TIP="$(git rev-parse "refs/remotes/origin/$b" 2>/dev/null || true)"
+            if [ -z "$TIP" ]; then
+              KEPT+=("$b|fetch failed")
+              continue
+            fi
+            if git merge-base --is-ancestor "$TIP" refs/remotes/origin/main 2>/dev/null; then
+              DELETED+=("$b|contained in main")
+              continue
+            fi
+
+            # manifest 里的 upstream_sha 进了 main，说明这次冲突要跟的上游状态
+            # 已经由后来的同步解决了，现场过期。manifest 缺失时退回第二个父提交。
+            UP="$(git show "refs/remotes/origin/$b:.sync-conflict.json" 2>/dev/null \
+                  | jq -r '.upstream_sha // empty' 2>/dev/null || true)"
+            if [ -z "$UP" ]; then
+              UP="$(git rev-parse "$TIP^2" 2>/dev/null || true)"
+            fi
+            if [ -n "$UP" ] && git merge-base --is-ancestor "$UP" refs/remotes/origin/main 2>/dev/null; then
+              DELETED+=("$b|upstream $({ echo "$UP"; } | cut -c1-12) already in main")
+              continue
+            fi
+
+            KEPT+=("$b|pending")
+          done <<< "$BRANCHES"
+
+          for entry in "${DELETED[@]:-}"; do
+            [ -z "$entry" ] && continue
+            b="${entry%%|*}"
+            why="${entry#*|}"
+            if git push origin --delete "$b" >/dev/null 2>&1; then
+              echo "已删除 $b（$why）"
+            else
+              echo "::warning::删除 $b 失败（$why），保留待下次重试"
+              KEPT+=("$b|delete failed")
+            fi
+          done
+
+          {
+            echo "### sync-conflict/* 分支状态"
+            echo
+            echo "| 分支 | 状态 |"
+            echo "| --- | --- |"
+            for entry in "${KEPT[@]:-}"; do
+              [ -z "$entry" ] && continue
+              echo "| \`${entry%%|*}\` | 保留：${entry#*|} |"
+            done
+            for entry in "${DELETED[@]:-}"; do
+              [ -z "$entry" ] && continue
+              echo "| \`${entry%%|*}\` | 已删除：${entry#*|} |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Send Telegram notification on conflict
         if: steps.check.outputs.has_updates == 'true' && steps.merge.outputs.conflict == 'true'
