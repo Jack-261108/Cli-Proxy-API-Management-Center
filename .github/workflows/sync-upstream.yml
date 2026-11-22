@@ -77,8 +77,16 @@ jobs:
             if [ "${KEEP_WORKTREE:-0}" = "1" ]; then
               return $rc
             fi
-            if git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1 || [ -n "$(git status --porcelain)" ]; then
-              echo "::warning::提前退出，工作区可能处于合并中间态，恢复到 ${BEFORE_SHA:0:12}"
+            # 除非明确保留（KEEP_WORKTREE=1 只在真正合并成功时设置），否则无条件恢复。
+            # 原来只在「有 MERGE_HEAD」或「工作区脏」时才 reset，漏掉了第三种出口：
+            # 交接提交已经建立、工作区干净、MERGE_HEAD 也已消失，但 HEAD 停在合并
+            # 提交上（例如预置的同名本地分支让 `git branch` 失败，脚本 -e 退出）。
+            # 那种情况工作区看着干净，HEAD 却不是 BEFORE_SHA —— 后面的步骤会拿它
+            # 当合并结果去推。无条件 reset 是唯一不需要枚举出口的写法。
+            if [ "$(git rev-parse HEAD 2>/dev/null || true)" != "$BEFORE_SHA" ] \
+               || git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1 \
+               || [ -n "$(git status --porcelain)" ]; then
+              echo "::warning::提前退出，恢复到 ${BEFORE_SHA:0:12}"
               git reset --hard "$BEFORE_SHA" >/dev/null 2>&1 || true
               rm -f .sync-conflict.json
             fi
@@ -90,6 +98,7 @@ jobs:
           if MERGE_ERR="$(git merge upstream/main --no-edit -m "chore: sync upstream changes" 2>&1)"; then
             echo "$MERGE_ERR"
             echo "conflict=false" >> $GITHUB_OUTPUT
+            echo "merge_ok=true" >> $GITHUB_OUTPUT
             KEEP_WORKTREE=1
             echo "Merged upstream/main successfully."
           else
@@ -126,9 +135,11 @@ jobs:
               echo "::warning::git merge 失败但没有冲突文件（不是内容冲突），本次不做交接"
               echo "conflict=false" >> $GITHUB_OUTPUT
               echo "merge_failed=true" >> $GITHUB_OUTPUT
+              echo "merge_ok=false" >> $GITHUB_OUTPUT
             elif [ ! -s "$CONFLICTS_Z" ]; then
               if git commit --no-edit -m "chore: sync upstream changes (auto-preserve ad-free docs/components)" >/tmp/commit-docs.log 2>&1; then
                 echo "conflict=false" >> $GITHUB_OUTPUT
+                echo "merge_ok=true" >> $GITHUB_OUTPUT
                 KEEP_WORKTREE=1
                 echo "All conflicts were in docs/ad files and auto-resolved successfully."
               else
@@ -137,9 +148,11 @@ jobs:
                 echo "::warning::文档/广告冲突自动处理后无法建立合并提交：$(tail -n 3 /tmp/commit-docs.log 2>/dev/null | tr '\n' ' ')"
                 echo "conflict=false" >> $GITHUB_OUTPUT
                 echo "merge_failed=true" >> $GITHUB_OUTPUT
+                echo "merge_ok=false" >> $GITHUB_OUTPUT
               fi
             else
               echo "conflict=true" >> $GITHUB_OUTPUT
+              echo "merge_ok=false" >> $GITHUB_OUTPUT
               echo "conflict_files=$REMAINING_CONFLICTS" >> $GITHUB_OUTPUT
               echo "Unresolved code conflicts in: $REMAINING_CONFLICTS"
 
@@ -276,7 +289,11 @@ jobs:
         # We keep our own READMEs, but upstream's tests/toolchainVersion.test.ts
         # asserts they state the pinned Bun release. Follow package.json so a
         # upstream bump does not break CI.
-        if: steps.check.outputs.has_updates == 'true' && steps.merge.outputs.conflict == 'false'
+        #
+        # 只认 merge_ok。原来判的是 conflict == 'false'，而 merge_failed 那条路径
+        # 也输出 conflict=false —— 合并根本没成功，却会照常改 README 并提交，
+        # 把失败伪装成一次正常同步。
+        if: steps.check.outputs.has_updates == 'true' && steps.merge.outputs.merge_ok == 'true'
         run: |
           BUN=$(sed -n 's/.*"packageManager"[[:space:]]*:[[:space:]]*"bun@\([0-9][0-9.]*\)".*/\1/p' package.json | head -n 1)
           if [ -z "$BUN" ]; then
@@ -316,8 +333,20 @@ jobs:
           fi
 
       - name: Push updates
-        if: steps.check.outputs.has_updates == 'true' && steps.merge.outputs.conflict == 'false'
+        # 只认 merge_ok（见 Align 那一步的注释）。这一条尤其重要：这一步会
+        # `git tag -f` 把最新 v* tag 移到 HEAD 再 force-push，而 release.yml
+        # 就是 `push: tags: v*` 触发的。合并没成功却跑到这里，等于用旧代码发版，
+        # 且会把上游刚拉下来的新 tag 打到本地的旧 HEAD 上。
+        if: steps.check.outputs.has_updates == 'true' && steps.merge.outputs.merge_ok == 'true'
         run: |
+          # 纵深防御：即使上面的门控被改坏，也不允许在不该发版的状态下移动 tag。
+          # 这里再确认一次 HEAD 真的包含上游那个提交，否则只推 main、不动 tag。
+          UPSTREAM_SHA="$(git rev-parse upstream/main 2>/dev/null || true)"
+          if [ -n "$UPSTREAM_SHA" ] && ! git merge-base --is-ancestor "$UPSTREAM_SHA" HEAD 2>/dev/null; then
+            echo "::warning::HEAD 不包含 upstream/main（${UPSTREAM_SHA:0:12}），跳过 tag 推送以避免误发 release"
+            git push origin main
+            exit 0
+          fi
           git push origin main
           LATEST_TAG=$(git tag -l "v*" --sort=-v:refname | head -n 1 || echo "")
           if [ -n "$LATEST_TAG" ]; then
@@ -374,6 +403,15 @@ jobs:
 
           declare -a KEPT=() DELETED=() REMOVED=() FAILED=()
 
+          # 数组条目用 **制表符** 分隔，不用 `|`：原因里会贴 gh 的错误文本，
+          # 那里面常有竖线，用 `|` 当分隔符会把原因截断。
+          # 写进 Markdown 表格前还要转义 `|`，否则一行会被拆成多列。
+          row() {
+            local branch="$1" reason="$2" tag="$3"
+            reason="$(printf '%s' "$reason" | tr '\n\t' '  ' | sed 's/|/\\|/g')"
+            printf '| `%s` | %s：%s |\n' "$branch" "$tag" "$reason"
+          }
+
           # 数字校验：gh 成功但输出不是数字（被改动过的响应）也算未知。
           is_count() {
             case "$1" in
@@ -388,15 +426,15 @@ jobs:
             # 第 1 步：有 open PR 就保留 —— 必须排在 merged 之前。
             if ! OPEN_COUNT="$(gh api "repos/$REPO/pulls?state=open&head=$OWNER:$b&per_page=1" \
                                  --jq 'length' 2>&1)"; then
-              KEPT+=("$b|PR 状态未知（open 查询失败），按保留处理：$(echo "$OPEN_COUNT" | head -c 200 | tr '\n' ' ')")
+              KEPT+=("$b"$'\t'"PR 状态未知（open 查询失败），按保留处理：$(echo "$OPEN_COUNT" | head -c 200)")
               continue
             fi
             if ! is_count "$OPEN_COUNT"; then
-              KEPT+=("$b|PR 状态未知（open 输出异常：$(echo "$OPEN_COUNT" | head -c 80 | tr '\n' ' ')），按保留处理")
+              KEPT+=("$b"$'\t'"PR 状态未知（open 输出异常：$(echo "$OPEN_COUNT" | head -c 80)），按保留处理")
               continue
             fi
             if [ "$OPEN_COUNT" -gt 0 ]; then
-              KEPT+=("$b|有 open PR")
+              KEPT+=("$b"$'\t'"有 open PR")
               continue
             fi
 
@@ -404,26 +442,26 @@ jobs:
             # 「第 11 条才是 merged」时漏判。
             if ! MERGED_COUNT="$(gh api "repos/$REPO/pulls?state=closed&head=$OWNER:$b&per_page=100" \
                                   --jq '[.[] | select(.merged_at != null)] | length' 2>&1)"; then
-              KEPT+=("$b|PR 状态未知（merged 查询失败），按保留处理：$(echo "$MERGED_COUNT" | head -c 200 | tr '\n' ' ')")
+              KEPT+=("$b"$'\t'"PR 状态未知（merged 查询失败），按保留处理：$(echo "$MERGED_COUNT" | head -c 200)")
               continue
             fi
             if ! is_count "$MERGED_COUNT"; then
-              KEPT+=("$b|PR 状态未知（merged 输出异常），按保留处理")
+              KEPT+=("$b"$'\t'"PR 状态未知（merged 输出异常），按保留处理")
               continue
             fi
             if [ "$MERGED_COUNT" -gt 0 ]; then
-              DELETED+=("$b|PR merged")
+              DELETED+=("$b"$'\t'"PR merged")
               continue
             fi
 
             # 第 3 步：没有 PR 记录，退回 git 状态判断。
             TIP="$(git rev-parse "refs/remotes/origin/$b" 2>/dev/null || true)"
             if [ -z "$TIP" ]; then
-              KEPT+=("$b|本地无该 ref，无法判断")
+              KEPT+=("$b"$'\t'"本地无该 ref，无法判断")
               continue
             fi
             if git merge-base --is-ancestor "$TIP" refs/remotes/origin/main 2>/dev/null; then
-              DELETED+=("$b|contained in main")
+              DELETED+=("$b"$'\t'"contained in main")
               continue
             fi
 
@@ -435,17 +473,17 @@ jobs:
               UP="$(git rev-parse "$TIP^2" 2>/dev/null || true)"
             fi
             if [ -n "$UP" ] && git merge-base --is-ancestor "$UP" refs/remotes/origin/main 2>/dev/null; then
-              DELETED+=("$b|upstream $(echo "$UP" | cut -c1-12) already in main")
+              DELETED+=("$b"$'\t'"upstream $(echo "$UP" | cut -c1-12) already in main")
               continue
             fi
 
-            KEPT+=("$b|pending")
+            KEPT+=("$b"$'\t'"pending")
           done <<< "$BRANCHES"
 
           for entry in "${DELETED[@]:-}"; do
             [ -z "$entry" ] && continue
-            b="${entry%%|*}"
-            why="${entry#*|}"
+            b="${entry%%$'\t'*}"
+            why="${entry#*$'\t'}"
             if git push origin --delete "$b" >/dev/null 2>&1; then
               REMOVED+=("$entry")
               echo "已删除 $b（$why）"
@@ -464,15 +502,15 @@ jobs:
             echo "| --- | --- |"
             for entry in "${KEPT[@]:-}"; do
               [ -z "$entry" ] && continue
-              echo "| \`${entry%%|*}\` | 保留：${entry#*|} |"
+              row "${entry%%$'\t'*}" "${entry#*$'\t'}" "保留"
             done
             for entry in "${REMOVED[@]:-}"; do
               [ -z "$entry" ] && continue
-              echo "| \`${entry%%|*}\` | 已删除：${entry#*|} |"
+              row "${entry%%$'\t'*}" "${entry#*$'\t'}" "已删除"
             done
             for entry in "${FAILED[@]:-}"; do
               [ -z "$entry" ] && continue
-              echo "| \`${entry%%|*}\` | 删除失败，保留：${entry#*|} |"
+              row "${entry%%$'\t'*}" "${entry#*$'\t'}" "删除失败，保留"
             done
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -498,13 +536,15 @@ jobs:
           MERGE_FAILED: ${{ steps.merge.outputs.merge_failed }}
         run: |
           # 冲突现场已推成分支时，说明已交给自动解决流程，不再重复喊「请手动解决」。
+          # 注意「工作区已恢复」这句话不能无条件写：MERGE_OUTCOME=failure 时脚本可能在
+          # 任何位置中断（甚至 git reset 自己都失败），说「已被兜底恢复」是不准的。
           if [ -n "${CONFLICT_BRANCH:-}" ]; then
             STATUS_LINE="*状态:* 冲突已推送到分支 \`${CONFLICT_BRANCH}\`，交由自动解决流程处理。"
             ACTION_LINE="若自动修复未开 PR，请检查分支 \`${CONFLICT_BRANCH}\`。"
           elif [ "${MERGE_OUTCOME:-}" = "failure" ]; then
             # 步骤崩了但没有 conflict 输出：不是「解完了」，是没跑完。
             STATUS_LINE="*状态:* 合并步骤异常中止，没有产生交接分支。"
-            ACTION_LINE="看运行日志确认是 jq/磁盘/凭据哪一步，工作区已被兜底恢复。"
+            ACTION_LINE="看运行日志确认是 jq/磁盘/凭据哪一步；工作区可能没恢复，下一轮 run 前留意。"
           elif [ "${MERGE_FAILED:-}" = "true" ]; then
             # merge 非零退出但没有任何冲突文件：不是内容冲突，别让人去找不存在的冲突。
             STATUS_LINE="*状态:* git merge 被拒绝（无冲突文件），本次同步未完成。"
@@ -515,13 +555,20 @@ jobs:
           fi
 
           if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then
+            # 冲突文件名可能含 `|`、`*`、`_`、`` ` ``，直接塞进 Markdown（parse_mode=Markdown）
+            # 会：1) 在表格式排版里把行拆成多列；2) 被解析成斜体/代码而变形。
+            # 这里把 Markdown 有三个特殊意义的字符转义，并统一换行折叠成空格。
+            # 转义顺序：先 `\` 再 `|`、`*`、`_`、`` ` ``，避免把刚加的 `\` 再转一次。
+            SAFE_FILES="$(printf '%s' "${CONFLICT_FILES:-（无 / 步骤未产出）}" \
+              | tr '\n' ' ' \
+              | sed -e 's/\\/\\\\/g' -e 's/|/\\|/g' -e 's/\*/\\*/g' -e 's/_/\\_/g' -e 's/`/\\`/g')"
             TEXT=$(printf '%s\n\n%s\n%s\n%s\n\n%s\n```\n%s\n```\n\n%s\n\n%s' \
               "⚠️ *Cli-Proxy-API-Management-Center 同步冲突告警*" \
               "*仓库:* \`${{ github.repository }}\`" \
               "*上游:* \`router-for-me/Cli-Proxy-API-Management-Center\` (main)" \
               "$STATUS_LINE" \
               "*冲突文件列表:*" \
-              "${CONFLICT_FILES:-（无 / 步骤未产出）}" \
+              "$SAFE_FILES" \
               "🔗 [点击查看 GitHub Action 详情](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" \
               "$ACTION_LINE")
 
