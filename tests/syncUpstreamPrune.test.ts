@@ -164,6 +164,36 @@ const regressionTest = () => {
     // the manifest's conflict_files must still catch it.
     conflictedHandoff('sync-conflict/take-ours');
     amendHandoff('L\n');
+    // P2-1 is asserted separately below (file_state unit check): an open/close
+    // pair without a separator is legal text, not an unresolved conflict.
+    // P2-3: the handoff auto-discards upstream sponsor/ad files (git rm during the
+    // merge, before the conflict list is written). Those paths are NOT in
+    // conflict_files, so deleting them is handoff noise, not a resolution —
+    // counting them would keep every synced branch alive as stale.
+    // Here f.txt stays UNRESOLVED and only the sponsor asset is dropped: the
+    // branch is pure scene + noise, so it must be pruned, not pinned.
+    conflictedHandoff('sync-conflict/auto-discarded');
+    writeFileSync(join(work, 'sponsor.css'), 'upstream ad\n');
+    git(work, ['add', 'sponsor.css']);
+    git(work, ['rm', '-qf', 'sponsor.css']);
+    git(work, ['commit', '-q', '--amend', '--no-edit']);
+    // Contrast: same sponsor drop, but f.txt IS resolved (take-ours) — real work
+    // exists, so the branch must survive regardless of the noise.
+    conflictedHandoff('sync-conflict/auto-discarded-resolved');
+    writeFileSync(join(work, 'f.txt'), 'L\n');
+    git(work, ['add', 'f.txt']);
+    writeFileSync(join(work, 'sponsor.css'), 'upstream ad\n');
+    git(work, ['add', 'sponsor.css']);
+    git(work, ['rm', '-qf', 'sponsor.css']);
+    git(work, ['commit', '-q', '--amend', '--no-edit']);
+    // Resolving by deleting a file that IS listed in conflict_files counts as
+    // work: that deletion is the resolution (covered by delete-file above, kept
+    // here as the contrasting shape for auto-discarded).
+    // P2-2: take-ours with the manifest removed -- the handoff merge still
+    // carries the resolution, and it must be found without the manifest.
+    conflictedHandoff('sync-conflict/take-ours-nomanifest');
+    git(work, ['rm', '-q', '.sync-conflict.json']);
+    git(work, ['commit', '-q', '--amend', '--no-edit']);
 
     git(work, ['checkout', '-q', 'main']);
     git(work, ['push', '-q', 'origin', 'main']);
@@ -180,6 +210,9 @@ const regressionTest = () => {
       'sync-conflict/marker-text',
       'sync-conflict/delete-file',
       'sync-conflict/take-ours',
+      'sync-conflict/auto-discarded',
+      'sync-conflict/auto-discarded-resolved',
+      'sync-conflict/take-ours-nomanifest',
     ]);
 
     const bin = join(root, 'bin');
@@ -236,6 +269,13 @@ const regressionTest = () => {
     expect(rowFor('sync-conflict/marker-text')).toContain('独有提交');
     expect(rowFor('sync-conflict/delete-file')).toContain('独有提交');
     expect(rowFor('sync-conflict/take-ours')).toContain('独有提交');
+    // take-ours with the manifest deleted: git cannot distinguish this from a
+    // handoff that never had a conflict, so the branch must be KEPT (either as
+    // recognised work or explicitly as unverifiable) — never deleted.
+    expect(rowFor('sync-conflict/take-ours-nomanifest')).toContain('保留');
+    // P2-3: an auto-discarded sponsor file is handoff noise, not a resolution.
+    expect(branchList).not.toContain('sync-conflict/auto-discarded');
+    expect(branchList).toContain('sync-conflict/auto-discarded-resolved');
     expect(rowFor('sync-conflict/real-handoff')).toContain('已删除');
     expect(rowFor('sync-conflict/only-handoff')).toContain('已删除');
     expect(summary).toContain('保留');
@@ -245,3 +285,57 @@ const regressionTest = () => {
 };
 
 test('prune keeps unique resolutions and deletes markers-only handoffs', regressionTest);
+
+/**
+ * P2-1: `file_state` must only call a file "unresolved" when it holds a COMPLETE
+ * conflict block (open, separator, close). A document that merely quotes an
+ * open/close pair — no separator line — is legal text, and treating it as an
+ * unresolved scene pins the branch forever.
+ */
+const fileStateTest = () => {
+  const root = mkdtempSync(join(tmpdir(), 'sync-upstream-markers-'));
+  try {
+    const work = join(root, 'w');
+    mkdirSync(work);
+    git(work, ['init', '-q']);
+    git(work, ['config', 'user.email', 't@example.com']);
+    git(work, ['config', 'user.name', 't']);
+
+    const script = extractPruneScript();
+    const start = script.indexOf('file_state() {');
+    if (start < 0) throw new Error('file_state not found in the prune step');
+    const end = script.indexOf('while IFS= read -r b; do', start);
+    const fn = script.slice(start, end);
+    const harness = join(root, 'fs.sh');
+    writeFileSync(harness, `#!/bin/bash\n${fn}\nfile_state "$1" "$2"; echo "state=$?"\n`);
+    chmodSync(harness, 0o755);
+
+    const commit = (content: string) => {
+      writeFileSync(join(work, 'f.txt'), content);
+      git(work, ['add', 'f.txt']);
+      git(work, ['commit', '-qm', 'c']);
+      return git(work, ['rev-parse', 'HEAD']).stdout.trim();
+    };
+
+    const stateOf = (content: string) => {
+      const sha = commit(content);
+      const out = spawnSync('bash', [harness, sha, 'f.txt'], { cwd: work, encoding: 'utf8' });
+      const m = /state=(\d)/.exec(out.stdout ?? '');
+      if (!m) throw new Error(`no state in output: ${out.stdout}${out.stderr}`);
+      return Number(m[1]);
+    };
+
+    // 0 = unresolved, 1 = resolved/legal, 2 = deleted, 3 = error
+    expect(stateOf('<<<<<<< HEAD\na\n=======\nb\n>>>>>>> upstream\n')).toBe(0);
+    // P2-1: no separator -> legal text, NOT an unresolved scene.
+    expect(stateOf('Example:\n<<<<<<< HEAD\nours\n>>>>>>> upstream\ndone\n')).toBe(1);
+    expect(stateOf('Title\n=======\n')).toBe(1);
+    expect(stateOf('<<<<<<< example\n')).toBe(1);
+    expect(stateOf('plain\n')).toBe(1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+};
+
+test('file_state treats only complete conflict blocks as unresolved', fileStateTest);
+
