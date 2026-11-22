@@ -536,8 +536,9 @@ jobs:
             #   b) 解冲突结果被 --amend 折进了**交接 merge 自己**（两个父提交都已在
             #      main，唯一内容就是那个 merge 的 diff）。
             # 所以规则 3 必须再加一条：分支相对 main 没有独有内容。
-            UP="$(git show "refs/remotes/origin/$b:.sync-conflict.json" 2>/dev/null \
-                  | jq -r '.upstream_sha // empty' 2>/dev/null || true)"
+            MANIFEST_JSON="$(git show "refs/remotes/origin/$b:.sync-conflict.json" 2>/dev/null || true)"
+            UP="$(printf '%s' "$MANIFEST_JSON" | jq -r '.upstream_sha // empty' 2>/dev/null || true)"
+            REPO_BEFORE="$(printf '%s' "$MANIFEST_JSON" | jq -r '.repo_sha_before // empty' 2>/dev/null || true)"
             if [ -z "$UP" ]; then
               UP="$(git rev-parse --verify -q "$TIP^2" 2>/dev/null || true)"
             fi
@@ -549,6 +550,8 @@ jobs:
               # 纯交接 merge 也会列出上游改过的所有文件。正确判据是
               # `git diff-tree -c`（combined diff）：只列出该 merge 相对**两个**
               # 父提交都不同的路径，即「只有这个 merge 才有的解冲突结果」。
+              # 交接 merge 本身必须单独识别并跳过：真实冲突交接的 tree 带冲突标记，
+              # combined diff 非空，不识别会把「只剩交接现场」的分支永久保留。
               # fail closed：rev-list 失败时不能当成「没有独有提交」然后删分支。
               # 用显式判断，而不是 `|| true` 把失败吞掉。
               if ! COMMITS="$(git rev-list "$TIP" --not refs/remotes/origin/main 2>/dev/null)"; then
@@ -559,9 +562,18 @@ jobs:
               UNIQUE_TREE=0
               while IFS= read -r c; do
                 [ -z "$c" ] && continue
-                nparents=$(git rev-list --parents -n1 "$c" 2>/dev/null | wc -w || echo 0)
-                if [ "${nparents:-0}" -gt 2 ]; then
-                  # 合并提交：只看它自身的解冲突改动（combined diff）
+                read -r csha p1 p2 _rest <<< "$(git rev-list --parents -n1 "$c" 2>/dev/null || true)"
+                if [ -n "${p2:-}" ]; then
+                  # 交接 merge：first parent=repo_sha_before、second parent=upstream_sha；
+                  # manifest 缺失时退回提交信息。
+                  if [ -n "$REPO_BEFORE" ] && [ "$p1" = "$REPO_BEFORE" ] && [ -n "$UP" ] && [ "$p2" = "$UP" ]; then
+                    continue
+                  fi
+                  msg="$(git show -s --format=%s "$c" 2>/dev/null || true)"
+                  case "$msg" in
+                    "ci: sync-conflict handoff"*) continue ;;
+                  esac
+                  # 其他合并提交：只看它自身的解冲突改动（combined diff）
                   own="$(git diff-tree -c --no-commit-id --name-only -r "$c" 2>/dev/null | sed '/^$/d' || true)"
                   if [ -n "$own" ] && [ -n "$(printf '%s\n' "$own" | grep -v '^\.sync-conflict\.json$' || true)" ]; then
                     UNIQUE_TREE=$((UNIQUE_TREE + 1))
