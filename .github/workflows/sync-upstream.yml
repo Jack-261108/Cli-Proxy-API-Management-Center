@@ -6,8 +6,12 @@ on:
   workflow_dispatch:
 
 permissions:
+  # 必须保留：本 workflow 会 push main、force-push tag、删除 sync-conflict/* 分支
+  # （实际凭据是 checkout 注入的 SYNC_PAT，但这一步的默认令牌仍要能写，
+  # 否则任何未显式带凭据的 git 操作都会 403）。
   contents: write
-  actions: write
+  # 不需要 actions: write —— 这个 workflow 从不调用 Actions API（通知里那个运行链接
+  # 只是个 URL 字符串）。多给一个写权限就多一个被滥用的面。
   # 清理步骤要查「这条分支上有没有还开着的 PR」，只读就够。
   pull-requests: read
 
@@ -340,12 +344,21 @@ jobs:
         if: steps.check.outputs.has_updates == 'true' && steps.merge.outputs.merge_ok == 'true'
         run: |
           # 纵深防御：即使上面的门控被改坏，也不允许在不该发版的状态下移动 tag。
-          # 这里再确认一次 HEAD 真的包含上游那个提交，否则只推 main、不动 tag。
-          UPSTREAM_SHA="$(git rev-parse upstream/main 2>/dev/null || true)"
-          if [ -n "$UPSTREAM_SHA" ] && ! git merge-base --is-ancestor "$UPSTREAM_SHA" HEAD 2>/dev/null; then
-            echo "::warning::HEAD 不包含 upstream/main（${UPSTREAM_SHA:0:12}），跳过 tag 推送以避免误发 release"
-            git push origin main
-            exit 0
+          # 走到这里但 HEAD 不含 upstream/main，说明 merge_ok 与仓库状态自相矛盾 ——
+          # 我们并不知道 HEAD 是什么，所以什么都不推：**fail closed**。
+          # 原来这里 push main 之后 exit 0，异常只会留在日志里；现在用 ::error::
+          # 让 run 变红，并由 mgmt-ci-autofix 那条链去查。
+          # 用 --verify：不带它时 `git rev-parse upstream/main` 在 ref 不存在时会把
+          # 字面量 "upstream/main" 打到 stdout，`|| true` 又会吞掉非零退出码，
+          # 于是变量非空、后面的报错信息还会打印半个 ref 名。
+          UPSTREAM_SHA="$(git rev-parse --verify -q upstream/main 2>/dev/null || true)"
+          if [ -z "$UPSTREAM_SHA" ]; then
+            echo "::error::无法解析 upstream/main，拒绝推送（main 与 tag 都不动）"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$UPSTREAM_SHA" HEAD 2>/dev/null; then
+            echo "::error::HEAD 不包含 upstream/main（${UPSTREAM_SHA:0:12}），拒绝推送 main 与 tag 以避免误发 release"
+            exit 1
           fi
           git push origin main
           LATEST_TAG=$(git tag -l "v*" --sort=-v:refname | head -n 1 || echo "")
@@ -403,13 +416,58 @@ jobs:
 
           declare -a KEPT=() DELETED=() REMOVED=() FAILED=()
 
+          # gh 的 stdout / stderr 必须分开接：混在一起会让错误文本被当成查询结果
+          # （"rate limit 403" 里那个 403 会被数成一条 PR，直接导致误删分支）。
+          GH_OUT="$(mktemp)"
+          GH_ERR="$(mktemp)"
+          MERGED_OUT="$(mktemp)"
+          MERGED_ERR="$(mktemp)"
+          trap 'rm -f "$GH_OUT" "$GH_ERR" "$MERGED_OUT" "$MERGED_ERR" 2>/dev/null || true' EXIT
+
           # 数组条目用 **制表符** 分隔，不用 `|`：原因里会贴 gh 的错误文本，
           # 那里面常有竖线，用 `|` 当分隔符会把原因截断。
-          # 写进 Markdown 表格前还要转义 `|`，否则一行会被拆成多列。
+          #
+          # 写进 Markdown 表格前要把表格元字符转义：
+          #   |  拆列
+          #   \  本身也要先转，否则新加的转义符会叠加
+          #   <  被当成 HTML 标签起始，表格内容会消失
+          #   * _ 在「状态」列里会被解析成强调（`a*b*c` 里 b 变斜体），
+          #       分支名在代码 span 里不受影响，但原因文本是普通文本。
+          md_escape() {
+            printf '%s' "$1" | tr '\n\t' '  ' \
+              | sed -e 's/\\/\\\\/g' -e 's/|/\\|/g' -e 's/</\\</g' -e 's/\*/\\*/g' -e 's/_/\\_/g'
+          }
+          # 行内代码里**不能**用反斜杠转义反引号：代码 span 内的 `\` 是字面量，
+          # 反引号会立刻闭合 span（实测 `x\`y` 渲染坏掉）。
+          # 正确做法是加长分隔符：找出内容里最长的连续反引号串（长度 N），
+          # 用 N+1 个反引号做定界符，首尾各留一个空格（CommonMark 规则）。
+          # 固定用两个反引号在遇到 ``a`` 这种连续两个时仍然会破。
+          code_span() {
+            local s="$1" n=0 run=0 ch i
+            local len=${#s}
+            for ((i = 0; i < len; i++)); do
+              ch="${s:i:1}"
+              if [ "$ch" = '`' ]; then
+                run=$((run + 1))
+                [ "$run" -gt "$n" ] && n=$run
+              else
+                run=0
+              fi
+            done
+            if [ "$n" -eq 0 ]; then
+              printf '`%s`' "$s"
+              return
+            fi
+            local fence
+            fence="$(printf '%*s' $((n + 1)) '' | tr ' ' '`')"
+            printf '%s %s %s' "$fence" "$s" "$fence"
+          }
           row() {
-            local branch="$1" reason="$2" tag="$3"
-            reason="$(printf '%s' "$reason" | tr '\n\t' '  ' | sed 's/|/\\|/g')"
-            printf '| `%s` | %s：%s |\n' "$branch" "$tag" "$reason"
+            local branch reason tag
+            branch="$(code_span "$(md_escape "$1")")"
+            reason="$(md_escape "$2")"
+            tag="$3"
+            printf '| %s | %s：%s |\n' "$branch" "$tag" "$reason"
           }
 
           # 数字校验：gh 成功但输出不是数字（被改动过的响应）也算未知。
@@ -420,17 +478,44 @@ jobs:
             return 0
           }
 
+          # 判断合并树里某个文件的状态（区分「未解现场」和「已解成果」）：
+          #   0 = 仍含完整冲突块（^<<<<<<< 且 ^>>>>>>>）
+          #   1 = 无完整冲突块（已解；单独的 ======= 或 <<<<<<< 不算）
+          #   2 = 路径不存在（解冲突时删除，属成果）
+          #   3 = 查询错误（调用方 fail closed）
+          file_state() {
+            local c="$1" fn="$2" rc content
+            if git rev-parse --verify -q "$c:$fn" >/dev/null 2>&1; then
+              :
+            else
+              rc=$?
+              if [ "$rc" -eq 1 ]; then
+                return 2
+              fi
+              return 3
+            fi
+            if ! content="$(git show "$c:$fn" 2>/dev/null)"; then
+              return 3
+            fi
+            if printf '%s\n' "$content" | grep -q '^<<<<<<< ' \
+               && printf '%s\n' "$content" | grep -q '^>>>>>>> '; then
+              return 0
+            fi
+            return 1
+          }
+
           while IFS= read -r b; do
             [ -z "$b" ] && continue
 
             # 第 1 步：有 open PR 就保留 —— 必须排在 merged 之前。
-            if ! OPEN_COUNT="$(gh api "repos/$REPO/pulls?state=open&head=$OWNER:$b&per_page=1" \
-                                 --jq 'length' 2>&1)"; then
-              KEPT+=("$b"$'\t'"PR 状态未知（open 查询失败），按保留处理：$(echo "$OPEN_COUNT" | head -c 200)")
+            if ! gh api "repos/$REPO/pulls?state=open&head=$OWNER:$b&per_page=1" \
+                 --jq 'length' > "$GH_OUT" 2> "$GH_ERR"; then
+              KEPT+=("$b"$'\t'"PR 状态未知（open 查询失败），按保留处理：$(head -c 200 "$GH_ERR")")
               continue
             fi
+            OPEN_COUNT="$(tr -d '\n' < "$GH_OUT")"
             if ! is_count "$OPEN_COUNT"; then
-              KEPT+=("$b"$'\t'"PR 状态未知（open 输出异常：$(echo "$OPEN_COUNT" | head -c 80)），按保留处理")
+              KEPT+=("$b"$'\t'"PR 状态未知（open 输出异常：$(head -c 80 "$GH_OUT")），按保留处理")
               continue
             fi
             if [ "$OPEN_COUNT" -gt 0 ]; then
@@ -438,13 +523,18 @@ jobs:
               continue
             fi
 
-            # 第 2 步：确认存在已合并的 PR。per_page=100 是单页上限，避免
-            # 「第 11 条才是 merged」时漏判。
-            if ! MERGED_COUNT="$(gh api "repos/$REPO/pulls?state=closed&head=$OWNER:$b&per_page=100" \
-                                  --jq '[.[] | select(.merged_at != null)] | length' 2>&1)"; then
-              KEPT+=("$b"$'\t'"PR 状态未知（merged 查询失败），按保留处理：$(echo "$MERGED_COUNT" | head -c 200)")
+            # 第 2 步：确认存在已合并的 PR。
+            # 用 --paginate + 逐条输出再计数，而不是只取一页：同一分支被反复
+            # 用作交接分支时 closed PR 可能超过 100 条，「第 101 条才是 merged」
+            # 就会漏判。gh 2.46 没有 --slurp，所以让 --jq 每条输出一行再本地数。
+            if ! gh api "repos/$REPO/pulls?state=closed&head=$OWNER:$b&per_page=100" \
+                 --paginate \
+                 --jq '.[] | select(.merged_at != null) | .number' \
+                 > "$MERGED_OUT" 2> "$MERGED_ERR"; then
+              KEPT+=("$b"$'\t'"PR 状态未知（merged 查询失败），按保留处理：$(head -c 200 "$MERGED_ERR")")
               continue
             fi
+            MERGED_COUNT="$(wc -l < "$MERGED_OUT" | tr -d ' ')"
             if ! is_count "$MERGED_COUNT"; then
               KEPT+=("$b"$'\t'"PR 状态未知（merged 输出异常），按保留处理")
               continue
@@ -465,15 +555,131 @@ jobs:
               continue
             fi
 
-            # manifest 里的 upstream_sha 进了 main，说明这次冲突要跟的上游状态
-            # 已经由后来的同步解决了，现场过期。manifest 缺失时退回第二个父提交。
-            UP="$(git show "refs/remotes/origin/$b:.sync-conflict.json" 2>/dev/null \
-                  | jq -r '.upstream_sha // empty' 2>/dev/null || true)"
+            # manifest 里的 upstream_sha 进了 main，只能说明「上游那半个现场已经
+            # 跟上了」，**不能**说明这条分支上的解冲突成果已经进 main。
+            # 实测两个反例，都真丢数据：
+            #   a) 分支上有唯一的解冲突**普通提交**；
+            #   b) 解冲突结果被 --amend 折进了**交接 merge 自己**（两个父提交都已在
+            #      main，唯一内容就是那个 merge 的 diff）。
+            # 所以规则 3 必须再加一条：分支相对 main 没有独有内容。
+            MANIFEST_JSON="$(git show "refs/remotes/origin/$b:.sync-conflict.json" 2>/dev/null || true)"
+            UP="$(printf '%s' "$MANIFEST_JSON" | jq -r '.upstream_sha // empty' 2>/dev/null || true)"
+            CONFLICT_FILES="$(printf '%s' "$MANIFEST_JSON" | jq -r '.conflict_files[]? // empty' 2>/dev/null || true)"
             if [ -z "$UP" ]; then
-              UP="$(git rev-parse "$TIP^2" 2>/dev/null || true)"
+              UP="$(git rev-parse --verify -q "$TIP^2" 2>/dev/null || true)"
             fi
             if [ -n "$UP" ] && git merge-base --is-ancestor "$UP" refs/remotes/origin/main 2>/dev/null; then
-              DELETED+=("$b"$'\t'"upstream $(echo "$UP" | cut -c1-12) already in main")
+              # 统计「分支相对 main 还带着的实质内容」。必须**包含合并提交**：
+              # `--no-merges` 会把交接 merge 整个剔掉，而解冲突结果可能就在它里面
+              # （--amend 折进去的常见形态）。同时不能用 `git show --name-only`
+              # 判断合并提交的内容 —— 它对 merge 打印的是相对第一父的整份差异，
+              # 纯交接 merge 也会列出上游改过的所有文件。正确判据是
+              # `git diff-tree -c`（combined diff）：只列出该 merge 相对**两个**
+              # 父提交都不同的路径，即「只有这个 merge 才有的解冲突结果」。
+              #
+              # 但「combined diff 非空」还不足以判定它是真实成果：**未解决的**交接
+              # merge 的 tree 里留着 `<<<<<<<` 标记，combined diff 同样非空。两种
+              # 形态在 diff 层面无法区分，实测：
+              #   真冲突未解决  -> tree 含 markers，diff-tree -c = [f.txt]
+              #   已解冲突成 Z  -> tree 是内容，diff-tree -c = [f.txt]
+              # 所以对合并提交要多看一步：它改动过的文件里，是否还留着冲突标记。
+              # 全都还带标记 = 纯交接现场（没有产出），跳过；
+              # 有任何文件已经没有标记 = 里面有人做过的决定，必须计入。
+              # fail closed：rev-list 失败时不能当成「没有独有提交」然后删分支。
+              if ! COMMITS="$(git rev-list "$TIP" --not refs/remotes/origin/main 2>/dev/null)"; then
+                KEPT+=("$b"$'\t'"upstream 已在 main，但无法枚举分支提交，按保留处理")
+                continue
+              fi
+
+              UNIQUE_TREE=0
+              SCAN_FAILED=0
+              while IFS= read -r c; do
+                [ -z "$c" ] && continue
+                # fail closed：下面每个 git 查询失败都保留分支，不能当成「没有独有内容」
+                if ! PARENTS="$(git rev-list --parents -n1 "$c" 2>/dev/null)"; then
+                  SCAN_FAILED=1
+                  break
+                fi
+                read -r _csha _p1 p2 _rest <<< "$PARENTS"
+                if [ -n "${p2:-}" ]; then
+                  if ! own="$(git diff-tree -c --no-commit-id --name-only -r "$c" 2>/dev/null)"; then
+                    SCAN_FAILED=1
+                    break
+                  fi
+                  own="$(printf '%s\n' "$own" | sed '/^$/d')"
+                  if [ -z "$own" ]; then
+                    # 没有自己的改动 = 纯交接 merge（上游那一半），跳过
+                    continue
+                  fi
+                  # 有改动：逐个文件判断是否仍是「未解现场」。
+                  # 只有完整冲突块（<<<<<<< + >>>>>>>）才算未解；
+                  # 单独的 =======（Markdown Setext）或 <<<<<<< 示例不算。
+                  resolved=0
+                  while IFS= read -r fn; do
+                    [ -z "$fn" ] && continue
+                    case "$fn" in .sync-conflict.json) continue ;; esac
+                    if file_state "$c" "$fn"; then fs=0; else fs=$?; fi
+                    case "$fs" in
+                      1|2) resolved=1 ;;
+                      3) SCAN_FAILED=1; break 2 ;;
+                    esac
+                  done <<< "$own"
+                  # take-ours 形态：结果等于某一父，diff-tree -c 不会列出该文件。
+                  # 用 manifest 的 conflict_files 再逐文件核对 merge tree。
+                  if [ "$resolved" -eq 0 ] && [ -n "$CONFLICT_FILES" ]; then
+                    while IFS= read -r fn; do
+                      [ -z "$fn" ] && continue
+                      if file_state "$c" "$fn"; then fs=0; else fs=$?; fi
+                      case "$fs" in
+                        1|2) resolved=1; break ;;
+                        3) SCAN_FAILED=1; break 2 ;;
+                      esac
+                    done <<< "$CONFLICT_FILES"
+                  fi
+                  if [ "$resolved" -gt 0 ]; then
+                    UNIQUE_TREE=$((UNIQUE_TREE + 1))
+                  fi
+                else
+                  # 普通提交：只改 .sync-conflict.json 的属于交接产物，跳过
+                  if ! files="$(git show --pretty=format: --name-only "$c" 2>/dev/null)"; then
+                    SCAN_FAILED=1
+                    break
+                  fi
+                  files="$(printf '%s\n' "$files" | sed '/^$/d')"
+                  if [ -z "$files" ]; then
+                    # 空提交没有实质内容
+                    continue
+                  fi
+                  # 区分 grep 的 exit 1（没有非 manifest 文件，正常）和 2/127（错误）
+                  if FILTERED="$(printf '%s\n' "$files" | grep -v '^\.sync-conflict\.json$')"; then
+                    GREP_RC=0
+                  else
+                    GREP_RC=$?
+                  fi
+                  if [ "$GREP_RC" -eq 1 ]; then
+                    continue
+                  fi
+                  if [ "$GREP_RC" -ne 0 ]; then
+                    SCAN_FAILED=1
+                    break
+                  fi
+                  if [ -z "$FILTERED" ]; then
+                    continue
+                  fi
+                  UNIQUE_TREE=$((UNIQUE_TREE + 1))
+                fi
+              done <<< "$COMMITS"
+
+              if [ "$SCAN_FAILED" = 1 ]; then
+                KEPT+=("$b"$'\t'"upstream 已在 main，但扫描分支提交失败，按保留处理")
+                continue
+              fi
+
+              if [ "$UNIQUE_TREE" -gt 0 ]; then
+                KEPT+=("$b"$'\t'"upstream $(echo "$UP" | cut -c1-12) 已在 main，但分支还有 $UNIQUE_TREE 个独有提交")
+                continue
+              fi
+              DELETED+=("$b"$'\t'"upstream $(echo "$UP" | cut -c1-12) 已在 main，且只剩交接提交")
               continue
             fi
 
