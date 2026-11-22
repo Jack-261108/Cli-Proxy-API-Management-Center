@@ -1,0 +1,22 @@
+{
+  "upstream_sha": "aef56a47e42254602d1e59b62dccd7df9ec8680c",
+  "base_sha": "f7aae75243dcf1384a95adef7a1c8ed3762f6206",
+  "repo_sha_before": "d4f08bc7bdbb640a06a0e16a5e81b6ecd2128156",
+  "branch": "sync-conflict/aef56a47e422-d4f08bc7",
+  "run_id": "45063048246",
+  "handoff_doc": ".github/sync-conflict-handoff.md",
+  "conflict_files": [
+    "src/components/layout/MainLayout.tsx",
+    "src/features/plugins/components/PluginInstallGateModal.module.scss",
+    "src/features/providers/components/ProviderHeaderCard.module.scss",
+    "src/features/providers/components/ProviderHeaderCard.tsx",
+    "src/features/providers/sheets/forms/SponsorProviderForm.tsx",
+    "src/features/providers/sheets/forms/sharedForm.module.scss"
+  ],
+  "requirements": [
+    "delete .sync-conflict.json before opening the resolution PR",
+    "do not execute scripts from this branch (postinstall/prepare included)",
+    "extra review for any .github/workflows/** change",
+    "never auto-merge; the resolution PR needs a human review"
+  ]
+}
