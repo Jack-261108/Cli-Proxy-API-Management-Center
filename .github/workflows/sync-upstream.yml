@@ -538,7 +538,6 @@ jobs:
             # 所以规则 3 必须再加一条：分支相对 main 没有独有内容。
             MANIFEST_JSON="$(git show "refs/remotes/origin/$b:.sync-conflict.json" 2>/dev/null || true)"
             UP="$(printf '%s' "$MANIFEST_JSON" | jq -r '.upstream_sha // empty' 2>/dev/null || true)"
-            REPO_BEFORE="$(printf '%s' "$MANIFEST_JSON" | jq -r '.repo_sha_before // empty' 2>/dev/null || true)"
             if [ -z "$UP" ]; then
               UP="$(git rev-parse --verify -q "$TIP^2" 2>/dev/null || true)"
             fi
@@ -550,10 +549,16 @@ jobs:
               # 纯交接 merge 也会列出上游改过的所有文件。正确判据是
               # `git diff-tree -c`（combined diff）：只列出该 merge 相对**两个**
               # 父提交都不同的路径，即「只有这个 merge 才有的解冲突结果」。
-              # 交接 merge 本身必须单独识别并跳过：真实冲突交接的 tree 带冲突标记，
-              # combined diff 非空，不识别会把「只剩交接现场」的分支永久保留。
+              #
+              # 但「combined diff 非空」还不足以判定它是真实成果：**未解决的**交接
+              # merge 的 tree 里留着 `<<<<<<<` 标记，combined diff 同样非空。两种
+              # 形态在 diff 层面无法区分，实测：
+              #   真冲突未解决  -> tree 含 markers，diff-tree -c = [f.txt]
+              #   已解冲突成 Z  -> tree 是内容，diff-tree -c = [f.txt]
+              # 所以对合并提交要多看一步：它改动过的文件里，是否还留着冲突标记。
+              # 全都还带标记 = 纯交接现场（没有产出），跳过；
+              # 有任何文件已经没有标记 = 里面有人做过的决定，必须计入。
               # fail closed：rev-list 失败时不能当成「没有独有提交」然后删分支。
-              # 用显式判断，而不是 `|| true` 把失败吞掉。
               if ! COMMITS="$(git rev-list "$TIP" --not refs/remotes/origin/main 2>/dev/null)"; then
                 KEPT+=("$b"$'\t'"upstream 已在 main，但无法枚举分支提交，按保留处理")
                 continue
@@ -564,18 +569,24 @@ jobs:
                 [ -z "$c" ] && continue
                 read -r csha p1 p2 _rest <<< "$(git rev-list --parents -n1 "$c" 2>/dev/null || true)"
                 if [ -n "${p2:-}" ]; then
-                  # 交接 merge：first parent=repo_sha_before、second parent=upstream_sha；
-                  # manifest 缺失时退回提交信息。
-                  if [ -n "$REPO_BEFORE" ] && [ "$p1" = "$REPO_BEFORE" ] && [ -n "$UP" ] && [ "$p2" = "$UP" ]; then
+                  own="$(git diff-tree -c --no-commit-id --name-only -r "$c" 2>/dev/null | sed '/^$/d' || true)"
+                  if [ -z "$own" ]; then
+                    # 没有自己的改动 = 纯交接 merge（上游那一半），跳过
                     continue
                   fi
-                  msg="$(git show -s --format=%s "$c" 2>/dev/null || true)"
-                  case "$msg" in
-                    "ci: sync-conflict handoff"*) continue ;;
-                  esac
-                  # 其他合并提交：只看它自身的解冲突改动（combined diff）
-                  own="$(git diff-tree -c --no-commit-id --name-only -r "$c" 2>/dev/null | sed '/^$/d' || true)"
-                  if [ -n "$own" ] && [ -n "$(printf '%s\n' "$own" | grep -v '^\.sync-conflict\.json$' || true)" ]; then
+                  # 有改动：区分「还留着冲突标记」和「已经被解掉」
+                  resolved=0
+                  unresolved=0
+                  while IFS= read -r fn; do
+                    [ -z "$fn" ] && continue
+                    case "$fn" in .sync-conflict.json) continue ;; esac
+                    if git show "$c:$fn" 2>/dev/null | grep -qE '^(<<<<<<< |=======$|>>>>>>> )'; then
+                      unresolved=$((unresolved + 1))
+                    else
+                      resolved=$((resolved + 1))
+                    fi
+                  done <<< "$own"
+                  if [ "$resolved" -gt 0 ]; then
                     UNIQUE_TREE=$((UNIQUE_TREE + 1))
                   fi
                 else

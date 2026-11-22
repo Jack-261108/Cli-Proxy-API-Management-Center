@@ -171,8 +171,15 @@ const regressionTest = () => {
     expect(branches).not.toContain('sync-conflict/only-handoff');
     expect(branches).not.toContain('sync-conflict/real-handoff');
 
+    // The three shapes differ only in content, never in parent SHAs, so assert on
+    // the reason text too: a resolution folded into the handoff merge must be
+    // reported as unique work, and a markers-only handoff must not.
     const summary = readFileSync(summaryPath, 'utf8');
-    expect(summary).toContain('sync-conflict/merge-only');
+    const rowFor = (name: string) =>
+      summary.split('\n').find((line) => line.startsWith('| `') && line.includes(name)) ?? '';
+    expect(rowFor('sync-conflict/merge-only')).toContain('独有提交');
+    expect(rowFor('sync-conflict/real-handoff')).toContain('已删除');
+    expect(rowFor('sync-conflict/only-handoff')).toContain('已删除');
     expect(summary).toContain('保留');
   } finally {
     rmSync(root, { recursive: true, force: true });
