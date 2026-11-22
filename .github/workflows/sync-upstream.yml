@@ -82,8 +82,12 @@ jobs:
               esac
             done
 
-            REMAINING_CONFLICTS=$(git diff --name-only --diff-filter=U | tr '\n' ' ')
-            if [ -z "$REMAINING_CONFLICTS" ]; then
+            # 冲突文件列表用 -z 取原始字节，避免 git 对特殊文件名输出的 C 风格引号
+            # 污染后面的 JSON。人类可读的那份由 jq 组装。
+            CONFLICTS_Z="$(mktemp)"
+            git diff --name-only -z --diff-filter=U > "$CONFLICTS_Z"
+            REMAINING_CONFLICTS="$(tr '\0' '\n' < "$CONFLICTS_Z" | tr '\n' ' ')"
+            if [ ! -s "$CONFLICTS_Z" ]; then
               git commit --no-edit -m "chore: sync upstream changes (auto-preserve ad-free docs/components)"
               echo "conflict=false" >> $GITHUB_OUTPUT
               echo "All conflicts were in docs/ad files and auto-resolved successfully."
@@ -95,56 +99,78 @@ jobs:
               # 冲突现场交给 Hermes 自动解决：先提交当前合并（保留两个父提交），
               # 再把提交推成一条可机读的分支，最后把工作区**真正**恢复到合并前。
               #
-              # 三个要点，都是踩过的坑：
+              # 四个要点，都是踩过的坑：
               #   1. 不能用 `git checkout -b` 再来 abort —— checkout 会清掉 MERGE_HEAD，
               #      之后 `git merge --abort` 只会报 "no merge to abort"，被 || true 吞掉，
               #      看着像回退了其实没有。这里用 `git reset --hard <before>`，必然生效。
-              #   2. 分支名用上游 SHA 前缀，不是时间戳：重跑/重叠/手动 dispatch 都会落到
-              #      同一条分支上，已存在就跳过，不重复堆分支、也不覆盖已有现场。
-              #   3. 交接提交里写一个 JSON，带 upstream/base/repo 三个 SHA，外部（Hermes）
-              #      不需要解析中文日志就能机读定位。
+              #   2. 去重键必须带**本地 HEAD**，不能只看 upstream SHA，也不能用 merge-base：
+              #      merge-base(local, upstream) 只取决于上游历史，本地 main 前进不改变它，
+              #      所以「upstream SHA + base_sha」在本地前进后仍然是同一个键 ——
+              #      会命中陈旧分支，新冲突永远不交接。实测确认过。
+              #   3. 交接提交里写一个 JSON，带 upstream/base/repo 三个 SHA 和结构化的
+              #      冲突文件数组，外部（Hermes）不需要解析中文日志就能机读定位。
+              #   4. JSON 必须由 jq 生成：git 对含引号/反斜杠的文件名会输出 C 风格转义，
+              #      直接 printf 进 JSON 会产出非法文档（实测 JSON.parse 报错）。
               UPSTREAM_SHA="$(git rev-parse upstream/main)"
               BASE_SHA="$(git merge-base HEAD upstream/main)"
               BEFORE_SHA="$(git rev-parse HEAD)"
-              TARGET_BRANCH="sync-conflict/${UPSTREAM_SHA:0:12}"
+              TARGET_BRANCH="sync-conflict/${UPSTREAM_SHA:0:12}-${BEFORE_SHA:0:8}"
+              MANIFEST_DIR="$(mktemp -d)"
 
               if git ls-remote --exit-code --heads origin "$TARGET_BRANCH" >/dev/null 2>&1; then
                 echo "conflict_branch=$TARGET_BRANCH" >> $GITHUB_OUTPUT
-                echo "分支 $TARGET_BRANCH 已存在（同一上游版本），跳过，不覆盖已有现场。"
+                echo "分支 $TARGET_BRANCH 已存在（同一上游版本 + 同一本地基线），跳过，不覆盖已有现场。"
                 git reset --hard "$BEFORE_SHA" >/dev/null
                 echo "工作区已恢复到 ${BEFORE_SHA:0:12}"
               else
-                # 机读交接文件：只描述「这是哪次交接」，不含任何可执行内容。
-                printf '{"upstream_sha":"%s","base_sha":"%s","repo_sha_before":"%s","conflict_files":"%s"}\n' \
-                  "$UPSTREAM_SHA" "$BASE_SHA" "$BEFORE_SHA" "$REMAINING_CONFLICTS" \
-                  > .sync-conflict.json
-
-                if git add -A >/dev/null 2>&1 \
-                   && git -c user.name="github-actions[bot]" \
-                         -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-                         commit -m "ci: sync-conflict handoff (upstream ${UPSTREAM_SHA:0:12})" >/tmp/commit.log 2>&1; then
-                  MERGE_SHA="$(git rev-parse HEAD)"
-                  git branch "$TARGET_BRANCH" "$MERGE_SHA"
-                  # 无论后面推送成败，先把 main 的工作区恢复干净。
+                # 先判断 jq 在不在：没有它就无法安全生成 manifest，宁可不交接也不写坏文件。
+                if ! command -v jq >/dev/null 2>&1; then
+                  echo "::warning::runner 上没有 jq，无法生成合法 manifest，本次不交接"
                   git reset --hard "$BEFORE_SHA" >/dev/null
                   echo "工作区已恢复到 ${BEFORE_SHA:0:12}"
-                  if PUSH_ERR="$(git push origin "$TARGET_BRANCH" 2>&1)"; then
-                    echo "conflict_branch=$TARGET_BRANCH" >> $GITHUB_OUTPUT
-                    echo "conflict_upstream_sha=$UPSTREAM_SHA" >> $GITHUB_OUTPUT
-                    echo "已将冲突现场推送到 $TARGET_BRANCH（合并父提交已保留），等待自动解决。"
-                  else
-                    echo "::warning::推送 $TARGET_BRANCH 失败：${PUSH_ERR}"
-                    git branch -D "$TARGET_BRANCH" >/dev/null 2>&1 || true
-                    echo "本地交接分支已清理，main 未受影响。"
-                  fi
                 else
-                  echo "::warning::无法建立交接提交：$(tail -n 3 /tmp/commit.log 2>/dev/null | tr '\n' ' ')"
-                  git reset --hard "$BEFORE_SHA" >/dev/null
-                  echo "工作区已恢复到 ${BEFORE_SHA:0:12}"
+                  # 机读交接文件：只描述「这是哪次交接」，不含任何可执行内容。
+                  jq -n \
+                    --arg upstream_sha "$UPSTREAM_SHA" \
+                    --arg base_sha "$BASE_SHA" \
+                    --arg repo_sha_before "$BEFORE_SHA" \
+                    --arg branch "$TARGET_BRANCH" \
+                    --arg run_id "${GITHUB_RUN_ID:-}" \
+                    --slurpfile files <(jq -Rs 'split("\u0000") | map(select(length>0))' "$CONFLICTS_Z") \
+                    '{upstream_sha:$upstream_sha, base_sha:$base_sha,
+                      repo_sha_before:$repo_sha_before, branch:$branch,
+                      run_id:$run_id, conflict_files:$files[0]}' \
+                    > "$MANIFEST_DIR/.sync-conflict.json"
+                  cp "$MANIFEST_DIR/.sync-conflict.json" .sync-conflict.json
+
+                  if git add -A >/dev/null 2>&1 \
+                     && git -c user.name="github-actions[bot]" \
+                           -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+                           commit -m "ci: sync-conflict handoff (upstream ${UPSTREAM_SHA:0:12})" >/tmp/commit.log 2>&1; then
+                    MERGE_SHA="$(git rev-parse HEAD)"
+                    git branch "$TARGET_BRANCH" "$MERGE_SHA"
+                    # 无论后面推送成败，先把 main 的工作区恢复干净。
+                    git reset --hard "$BEFORE_SHA" >/dev/null
+                    echo "工作区已恢复到 ${BEFORE_SHA:0:12}"
+                    if PUSH_ERR="$(git push origin "$TARGET_BRANCH" 2>&1)"; then
+                      echo "conflict_branch=$TARGET_BRANCH" >> $GITHUB_OUTPUT
+                      echo "conflict_upstream_sha=$UPSTREAM_SHA" >> $GITHUB_OUTPUT
+                      echo "已将冲突现场推送到 $TARGET_BRANCH（合并父提交已保留），等待自动解决。"
+                    else
+                      echo "::warning::推送 $TARGET_BRANCH 失败：${PUSH_ERR}"
+                      git branch -D "$TARGET_BRANCH" >/dev/null 2>&1 || true
+                      echo "本地交接分支已清理，main 未受影响。"
+                    fi
+                  else
+                    echo "::warning::无法建立交接提交：$(tail -n 3 /tmp/commit.log 2>/dev/null | tr '\n' ' ')"
+                    git reset --hard "$BEFORE_SHA" >/dev/null
+                    echo "工作区已恢复到 ${BEFORE_SHA:0:12}"
+                  fi
                 fi
               fi
             fi
           fi
+          rm -rf "$MANIFEST_DIR" "$CONFLICTS_Z"
 
       - name: Align README Bun version with package.json
         # We keep our own READMEs, but upstream's tests/toolchainVersion.test.ts
