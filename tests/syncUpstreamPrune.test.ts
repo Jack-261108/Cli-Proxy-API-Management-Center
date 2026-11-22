@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import process from 'node:process';
 
 const workflowPath = new URL('../.github/workflows/sync-upstream.yml', import.meta.url);
@@ -23,7 +23,9 @@ function git(cwd: string, args: string[], allowFailure = false) {
 }
 
 function commitFile(cwd: string, path: string, content: string, message: string) {
-  writeFileSync(join(cwd, path), content);
+  const full = join(cwd, path);
+  mkdirSync(dirname(full), { recursive: true });
+  writeFileSync(full, content);
   git(cwd, ['add', path]);
   git(cwd, ['commit', '-qm', message]);
 }
@@ -103,6 +105,10 @@ const regressionTest = () => {
 
     git(work, ['checkout', '-q', '-b', 'before', m1]);
     commitFile(work, 'f.txt', 'L\n', 'BEFORE');
+    // A sponsor/ad asset that exists in the upstream tip, so the handoff's
+    // "auto-discard" step has something real to remove. Without this the
+    // add+rm pair is a no-op and the P2-3 path never fires.
+    commitFile(work, 'assets/sponsorQuickStart.css', 'ad\n', 'SPONSOR');
     const before = git(work, ['rev-parse', 'HEAD']).stdout.trim();
     git(work, ['checkout', '-q', '-b', 'upstream', m1]);
     commitFile(work, 'f.txt', 'U\n', 'UPSTREAM');
@@ -117,11 +123,16 @@ const regressionTest = () => {
 
     // Creates the conflicted handoff merge (markers + manifest). The manifest
     // lists f.txt in conflict_files, like the workflow's real handoff.
+    //
+    // IMPORTANT: commit with `git commit` while MERGE_HEAD is present so the
+    // result is a real two-parent merge. `git commit --amend` on top of a merge
+    // flattens it to a single parent, which silently stops exercising the merge
+    // branch of the prune logic.
     const conflictedHandoff = (branch: string) => {
       git(work, ['checkout', '-q', '-b', branch, before]);
-      git(work, ['merge', '--no-ff', 'upstream', '-m', 'handoff'], true);
+      git(work, ['merge', '--no-ff', 'upstream', '-m', 'ci: sync-conflict handoff'], true);
       git(work, ['add', '-A']);
-      git(work, ['commit', '-q', '-m', 'handoff']);
+      git(work, ['commit', '-q', '-m', 'ci: sync-conflict handoff']);
       writeFileSync(
         join(work, '.sync-conflict.json'),
         `${JSON.stringify({
@@ -131,6 +142,8 @@ const regressionTest = () => {
         })}\n`
       );
       git(work, ['add', '.']);
+      // amend is safe HERE because the merge commit already exists; amend only
+      // rewrites that commit (it does not flatten a merge into a non-merge).
       git(work, ['commit', '-q', '--amend', '--no-edit']);
     };
     const amendHandoff = (content: string | null, removeManifest = false) => {
@@ -164,6 +177,46 @@ const regressionTest = () => {
     // the manifest's conflict_files must still catch it.
     conflictedHandoff('sync-conflict/take-ours');
     amendHandoff('L\n');
+    // P2-1 is asserted separately below (file_state unit check): an open/close
+    // pair without a separator is legal text, not an unresolved conflict.
+    // P2-3: the handoff auto-discards upstream sponsor/ad files (git rm during the
+    // merge, before the conflict list is written). Those paths are NOT in
+    // conflict_files, so deleting them is handoff noise, not a resolution —
+    // counting them would keep every synced branch alive as stale.
+    // The asset is committed in `before`, so removing it here is a real deletion
+    // (an add+rm pair would be a no-op and would not exercise this path).
+    // f.txt stays UNRESOLVED: pure scene + noise, so the branch must be pruned.
+    conflictedHandoff('sync-conflict/auto-discarded');
+    git(work, ['rm', '-qf', 'assets/sponsorQuickStart.css']);
+    git(work, ['commit', '-q', '--amend', '--no-edit']);
+    // Contrast: same sponsor drop, but f.txt IS resolved (take-ours) — real work
+    // exists, so the branch must survive regardless of the noise.
+    conflictedHandoff('sync-conflict/auto-discarded-resolved');
+    writeFileSync(join(work, 'f.txt'), 'L\n');
+    git(work, ['add', 'f.txt']);
+    git(work, ['rm', '-qf', 'assets/sponsorQuickStart.css']);
+    git(work, ['commit', '-q', '--amend', '--no-edit']);
+    // Resolving by deleting a file that IS listed in conflict_files counts as
+    // work: that deletion is the resolution (covered by delete-file above, kept
+    // here as the contrasting shape for auto-discarded).
+    // P1: take-ours with the manifest deleted. f.txt resolves to L, which equals
+    // the first parent, so `diff-tree -c` reports NO files for the merge — the
+    // branch has no visible unique content, and only the manifest could have
+    // proven the conflict existed. It must still be KEPT: git cannot distinguish
+    // this from "never conflicted", and deleting loses the resolution.
+    conflictedHandoff('sync-conflict/take-ours-nomanifest');
+    amendHandoff('L\n', true);
+    // P2-3 (P2 后续): an older manifest stored conflict_files as a STRING rather
+    // than an array. `.[]` on a string yields nothing, which silently disabled
+    // the take-ours fallback and deleted the resolved branch.
+    conflictedHandoff('sync-conflict/legacy-string-manifest');
+    amendHandoff('L\n');
+    writeFileSync(
+      join(work, '.sync-conflict.json'),
+      `${JSON.stringify({ upstream_sha: upstream, repo_sha_before: before, conflict_files: 'f.txt' })}\n`
+    );
+    git(work, ['add', '.']);
+    git(work, ['commit', '-q', '--amend', '--no-edit']);
 
     git(work, ['checkout', '-q', 'main']);
     git(work, ['push', '-q', 'origin', 'main']);
@@ -180,6 +233,10 @@ const regressionTest = () => {
       'sync-conflict/marker-text',
       'sync-conflict/delete-file',
       'sync-conflict/take-ours',
+      'sync-conflict/auto-discarded',
+      'sync-conflict/auto-discarded-resolved',
+      'sync-conflict/take-ours-nomanifest',
+      'sync-conflict/legacy-string-manifest',
     ]);
 
     const bin = join(root, 'bin');
@@ -236,6 +293,16 @@ const regressionTest = () => {
     expect(rowFor('sync-conflict/marker-text')).toContain('独有提交');
     expect(rowFor('sync-conflict/delete-file')).toContain('独有提交');
     expect(rowFor('sync-conflict/take-ours')).toContain('独有提交');
+    // take-ours with the manifest deleted: git cannot distinguish this from a
+    // handoff that never had a conflict, so the branch must be KEPT (either as
+    // recognised work or explicitly as unverifiable) — never deleted.
+    expect(rowFor('sync-conflict/take-ours-nomanifest')).toContain('保留');
+    // Legacy string-format manifest must still protect the take-ours resolution.
+    expect(branchList).toContain('sync-conflict/legacy-string-manifest');
+    expect(rowFor('sync-conflict/legacy-string-manifest')).toContain('独有提交');
+    // P2-3: an auto-discarded sponsor file is handoff noise, not a resolution.
+    expect(branchList).not.toContain('sync-conflict/auto-discarded');
+    expect(branchList).toContain('sync-conflict/auto-discarded-resolved');
     expect(rowFor('sync-conflict/real-handoff')).toContain('已删除');
     expect(rowFor('sync-conflict/only-handoff')).toContain('已删除');
     expect(summary).toContain('保留');
@@ -245,3 +312,66 @@ const regressionTest = () => {
 };
 
 test('prune keeps unique resolutions and deletes markers-only handoffs', regressionTest);
+
+/**
+ * P2-1: `file_state` must only call a file "unresolved" when it holds a COMPLETE
+ * conflict block (open, separator, close). A document that merely quotes an
+ * open/close pair — no separator line — is legal text, and treating it as an
+ * unresolved scene pins the branch forever.
+ */
+const fileStateTest = () => {
+  const root = mkdtempSync(join(tmpdir(), 'sync-upstream-markers-'));
+  try {
+    const work = join(root, 'w');
+    mkdirSync(work);
+    git(work, ['init', '-q']);
+    git(work, ['config', 'user.email', 't@example.com']);
+    git(work, ['config', 'user.name', 't']);
+
+    const script = extractPruneScript();
+    const start = script.indexOf('file_state() {');
+    if (start < 0) throw new Error('file_state not found in the prune step');
+    const end = script.indexOf('while IFS= read -r b; do', start);
+    const fn = script.slice(start, end);
+    const harness = join(root, 'fs.sh');
+    writeFileSync(harness, `#!/bin/bash\n${fn}\nfile_state "$1" "$2"; echo "state=$?"\n`);
+    chmodSync(harness, 0o755);
+
+    const commit = (content: string) => {
+      writeFileSync(join(work, 'f.txt'), content);
+      git(work, ['add', 'f.txt']);
+      git(work, ['commit', '-qm', 'c']);
+      return git(work, ['rev-parse', 'HEAD']).stdout.trim();
+    };
+
+    const stateOf = (content: string) => {
+      const sha = commit(content);
+      const out = spawnSync('bash', [harness, sha, 'f.txt'], { cwd: work, encoding: 'utf8' });
+      const m = /state=(\d)/.exec(out.stdout ?? '');
+      if (!m) throw new Error(`no state in output: ${out.stdout}${out.stderr}`);
+      return Number(m[1]);
+    };
+
+    // 0 = unresolved, 1 = resolved/legal, 2 = deleted, 3 = error
+    expect(stateOf('<<<<<<< HEAD\na\n=======\nb\n>>>>>>> upstream\n')).toBe(0);
+    // P2-1: no separator -> legal text, NOT an unresolved scene.
+    expect(stateOf('Example:\n<<<<<<< HEAD\nours\n>>>>>>> upstream\ndone\n')).toBe(1);
+    expect(stateOf('Title\n=======\n')).toBe(1);
+    expect(stateOf('<<<<<<< example\n')).toBe(1);
+    expect(stateOf('plain\n')).toBe(1);
+    // P2-1 (P2 后续): these are all genuine unresolved scenes and must be seen
+    // as such -- missing them leaves the branch stale forever.
+    // CRLF line endings (a Windows checkout).
+    expect(stateOf('<<<<<<< HEAD\r\na\r\n=======\r\nb\r\n>>>>>>> upstream\r\n')).toBe(0);
+    // Marker runs longer than seven characters (git lengthens them when the
+    // content itself contains a run of the same character).
+    expect(stateOf('<<<<<<<<< HEAD\na\n=========\nb\n>>>>>>>>> upstream\n')).toBe(0);
+    // diff3 conflict style carries an extra ||||||| base section.
+    expect(stateOf('<<<<<<< HEAD\na\n||||||| base\nx\n=======\nb\n>>>>>>> upstream\n')).toBe(0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+};
+
+test('file_state treats only complete conflict blocks as unresolved', fileStateTest);
+

@@ -479,10 +479,22 @@ jobs:
           }
 
           # 判断合并树里某个文件的状态（区分「未解现场」和「已解成果」）：
-          #   0 = 仍含完整冲突块（^<<<<<<< 且 ^>>>>>>>）
-          #   1 = 无完整冲突块（已解；单独的 ======= 或 <<<<<<< 不算）
+          #   0 = 仍含完整冲突块（^<<<<<<<... ^=======... ^>>>>>>>）
+          #   1 = 无完整冲突块（已解；单独的分隔行或单个标记都不算）
           #   2 = 路径不存在（解冲突时删除，属成果）
           #   3 = 查询错误（调用方 fail closed）
+          #
+          # 「完整」必须包含分隔行 `=======`：git 只会为真正的冲突写出三行结构，
+          # 只有 `<<<<<<<` + `>>>>>>>` 而没有分隔行的文本不是冲突现场 ——
+          # 文档里完全可能存在这种片段（我们自己的 skill 就写过示例）。
+          # 少了这个条件，合法内容会被判成「未解现场」，那条分支就永远删不掉。
+          #
+          # 两处必须放宽，否则会漏判（结果为 stale 分支，不误删，但清理永远不生效）：
+          #   * CRLF：Windows 上的文件每个标记行都以 \r 结尾，`^<<<<<<< ` 匹配不到。
+          #     先统一去掉行尾的 \r。
+          #   * 标记长度 >= 7：git 在内容本身含 7 个连续相同字符时会写更长的标记
+          #     （`<<<<<<<<` 等），固定的 7 个匹配不到。
+          # diff3 风格多一行 `||||||| base`，不影响三行结构，已能识别。
           file_state() {
             local c="$1" fn="$2" rc content
             if git rev-parse --verify -q "$c:$fn" >/dev/null 2>&1; then
@@ -497,8 +509,10 @@ jobs:
             if ! content="$(git show "$c:$fn" 2>/dev/null)"; then
               return 3
             fi
-            if printf '%s\n' "$content" | grep -q '^<<<<<<< ' \
-               && printf '%s\n' "$content" | grep -q '^>>>>>>> '; then
+            content="$(printf '%s\n' "$content" | tr -d '\r')"
+            if printf '%s\n' "$content" | grep -qE '^<{7,} ' \
+               && printf '%s\n' "$content" | grep -qE '^={7,}$' \
+               && printf '%s\n' "$content" | grep -qE '^>{7,} '; then
               return 0
             fi
             return 1
@@ -562,9 +576,81 @@ jobs:
             #   b) 解冲突结果被 --amend 折进了**交接 merge 自己**（两个父提交都已在
             #      main，唯一内容就是那个 merge 的 diff）。
             # 所以规则 3 必须再加一条：分支相对 main 没有独有内容。
+            #
+            # manifest 可能不存在（解决时被删掉，这正是交接文档要求做的），也可能
+            # 是更早的格式（没有 conflict_files 字段）。这两种都不能让规则失效：
+            # 从历史里找**交接 merge**（双父提交）取第二父当 upstream_sha，并把
+            # 它的 combined diff 当作冲突文件清单。
             MANIFEST_JSON="$(git show "refs/remotes/origin/$b:.sync-conflict.json" 2>/dev/null || true)"
             UP="$(printf '%s' "$MANIFEST_JSON" | jq -r '.upstream_sha // empty' 2>/dev/null || true)"
-            CONFLICT_FILES="$(printf '%s' "$MANIFEST_JSON" | jq -r '.conflict_files[]? // empty' 2>/dev/null || true)"
+            if [ -n "$MANIFEST_JSON" ] && ! jq -e . >/dev/null 2>&1 <<< "$MANIFEST_JSON"; then
+              # manifest 存在但不是合法 JSON：不能当成「没有 conflict_files」，
+              # 否则 take-ours 兜底会被跳过，已解好的现场反而被误删。
+              KEPT+=("$b"$'\t'"manifest 不是合法 JSON，无法核对冲突文件，按保留处理")
+              continue
+            fi
+            # conflict_files 在旧格式里是**字符串**（可能是空格分隔的列表），
+            # 新版是数组。`.[]` 对字符串返回空，会让 take-ours / delete-file
+            # 的兜底失效，已解好的现场因此被误删。这里两种都接。
+            CONFLICT_FILES=""
+            if [ -n "$MANIFEST_JSON" ]; then
+              if ! CONFLICT_FILES="$(printf '%s' "$MANIFEST_JSON" \
+                     | jq -r 'if (.conflict_files | type) == "array" then (.conflict_files[] | tostring)
+                              elif (.conflict_files | type) == "string" then .conflict_files
+                              else empty end' 2>/dev/null)"; then
+                KEPT+=("$b"$'\t'"读取 manifest 的 conflict_files 失败，按保留处理")
+                continue
+              fi
+              # 字符串形态按空白切成多行，后面的逐行比对才成立
+              CONFLICT_FILES="$(printf '%s\n' "$CONFLICT_FILES" | tr ' \t' '\n\n' | sed '/^$/d')"
+            fi
+
+            # 从分支历史里找**交接 merge**。不能只认"最近的双父提交"：
+            # 分支上可能有别的（上游自身的、或解决时引入的）合并提交，
+            # 取错了就会拿错的第二父当 upstream_sha，规则 3 要么永不命中、
+            # 要么命中错的对象。用两个更强的特征定位：
+            #   1. 提交信息以 `ci: sync-conflict handoff` 开头（workflow 自己写的）；
+            #   2. 否则退回：双父 + 第二父是该提交的 upstream 分支来源，
+            #      且该提交的树里曾带 .sync-conflict.json。
+            # 两者都不匹配时 HANDOFF_MERGE 留空，后续按"无法判定"保守处理。
+            HANDOFF_MERGE=""
+            FALLBACK_MERGE=""
+            while IFS= read -r mc; do
+              [ -z "$mc" ] && continue
+              if ! mpar="$(git rev-list --parents -n1 "$mc" 2>/dev/null)"; then
+                break
+              fi
+              # shellcheck disable=SC2086
+              if [ "$(printf '%s\n' $mpar | wc -l)" -le 2 ]; then
+                continue
+              fi
+              [ -z "$FALLBACK_MERGE" ] && FALLBACK_MERGE="$mc"
+              msg="$(git show -s --format=%s "$mc" 2>/dev/null || true)"
+              case "$msg" in
+                "ci: sync-conflict handoff"*) HANDOFF_MERGE="$mc"; break ;;
+              esac
+            done <<< "$(git rev-list "$TIP" --not refs/remotes/origin/main 2>/dev/null || true)"
+            if [ -z "$HANDOFF_MERGE" ]; then
+              HANDOFF_MERGE="$FALLBACK_MERGE"
+            fi
+
+            if [ -z "$UP" ] && [ -n "$HANDOFF_MERGE" ]; then
+              UP="$(git rev-parse --verify -q "$HANDOFF_MERGE^2" 2>/dev/null || true)"
+            fi
+            # manifest **完全不存在**时才用 combined diff 反推冲突文件。
+            # manifest 存在但没有 conflict_files（旧格式）时不能这么补：
+            # 那道 diff 对纯交接 merge 也非空（tree 里是未解标记），
+            # 补上会让「只剩交接现场」的分支被当成成果而永久保留。
+            # 反推结果要排除两类噪音：
+            #   * .sync-conflict.json 本身（交接自带的文件，不是冲突）
+            #   * 交接时自动丢弃的 sponsor/广告文件（它们看起来是"被删的冲突文件"）
+            if [ -z "$MANIFEST_JSON" ] && [ -z "$CONFLICT_FILES" ] && [ -n "$HANDOFF_MERGE" ]; then
+              CONFLICT_FILES="$(git diff-tree -c --no-commit-id --name-only -r "$HANDOFF_MERGE" 2>/dev/null \
+                                | sed '/^$/d' \
+                                | grep -v '^\.sync-conflict\.json$' \
+                                | grep -vE '(^|/)([^/]*)(SponsorQuickStart|quickStart|QuickStart|sponsorQuickStart)[^/]*$' \
+                                || true)"
+            fi
             if [ -z "$UP" ]; then
               UP="$(git rev-parse --verify -q "$TIP^2" 2>/dev/null || true)"
             fi
@@ -593,6 +679,7 @@ jobs:
 
               UNIQUE_TREE=0
               SCAN_FAILED=0
+              KEEP_REASON=""
               while IFS= read -r c; do
                 [ -z "$c" ] && continue
                 # fail closed：下面每个 git 查询失败都保留分支，不能当成「没有独有内容」
@@ -607,25 +694,50 @@ jobs:
                     break
                   fi
                   own="$(printf '%s\n' "$own" | sed '/^$/d')"
+                  # own 为空有两种含义：纯交接 merge（上游那一半），或者
+                  # take-ours —— 解冲突结果恰好等于某一父，combined diff 不列它。
+                  # 后者只有在 manifest 的 conflict_files 在时才能识别，所以
+                  # 不能在这里无条件 continue：manifest 缺失时必须按保留处理，
+                  # 否则真正的 take-ours 成果会被当成噪音删掉。
                   if [ -z "$own" ]; then
-                    # 没有自己的改动 = 纯交接 merge（上游那一半），跳过
-                    continue
+                    if [ -z "$MANIFEST_JSON" ]; then
+                      KEEP_REASON="merge 无自带改动且 manifest 缺失，无法排除 take-ours，按保留处理"
+                      SCAN_FAILED=1
+                      break
+                    fi
+                    # manifest 在：用 conflict_files 核对是否 take-ours（见下）
+                    resolved=0
+                  else
+                    # 有改动：逐个文件判断是否仍是「未解现场」，或者是否算真实成果。
+                    # fs: 0=未解 1=已解 2=路径不存在（被删） 3=查询错误
+                    #
+                    # 「路径不存在」要区分两种来源：
+                    #   a) 解冲突时把文件删了  -> 是解冲突成果
+                    #   b) 交接时自动丢弃 sponsor/广告文件 -> 不是成果
+                    # (b) 的路径不会出现在 manifest 的 conflict_files 里（那些文件
+                    # 在 git 看来是自动解掉的，没有进冲突列表），而 (a) 一定在。
+                    # 所以只有出现在 conflict_files 里的删除才算成果；否则忽略，
+                    # 不然每次同步都会因为自动删 sponsor 文件而留下一条 stale 分支。
+                    resolved=0
+                    while IFS= read -r fn; do
+                      [ -z "$fn" ] && continue
+                      case "$fn" in .sync-conflict.json) continue ;; esac
+                      if file_state "$c" "$fn"; then fs=0; else fs=$?; fi
+                      case "$fs" in
+                        1) resolved=1 ;;
+                        2)
+                          # 删除：只有 manifest 明确列为冲突文件时才算是解冲突结果
+                          if [ -n "$CONFLICT_FILES" ] \
+                             && printf '%s\n' "$CONFLICT_FILES" | grep -qxF "$fn"; then
+                            resolved=1
+                          fi
+                          ;;
+                        3) SCAN_FAILED=1; break 2 ;;
+                      esac
+                    done <<< "$own"
                   fi
-                  # 有改动：逐个文件判断是否仍是「未解现场」。
-                  # 只有完整冲突块（<<<<<<< + >>>>>>>）才算未解；
-                  # 单独的 =======（Markdown Setext）或 <<<<<<< 示例不算。
-                  resolved=0
-                  while IFS= read -r fn; do
-                    [ -z "$fn" ] && continue
-                    case "$fn" in .sync-conflict.json) continue ;; esac
-                    if file_state "$c" "$fn"; then fs=0; else fs=$?; fi
-                    case "$fs" in
-                      1|2) resolved=1 ;;
-                      3) SCAN_FAILED=1; break 2 ;;
-                    esac
-                  done <<< "$own"
-                  # take-ours 形态：结果等于某一父，diff-tree -c 不会列出该文件。
-                  # 用 manifest 的 conflict_files 再逐文件核对 merge tree。
+                  # take-ours 形态：解冲突结果恰好等于某一父，diff-tree -c 不会
+                  # 列出该文件，只能靠 manifest 的 conflict_files 兜底。
                   if [ "$resolved" -eq 0 ] && [ -n "$CONFLICT_FILES" ]; then
                     while IFS= read -r fn; do
                       [ -z "$fn" ] && continue
@@ -671,7 +783,7 @@ jobs:
               done <<< "$COMMITS"
 
               if [ "$SCAN_FAILED" = 1 ]; then
-                KEPT+=("$b"$'\t'"upstream 已在 main，但扫描分支提交失败，按保留处理")
+                KEPT+=("$b"$'\t'"${KEEP_REASON:-扫描分支提交失败，按保留处理}")
                 continue
               fi
 
