@@ -13,7 +13,6 @@ import { join } from 'node:path';
 import process from 'node:process';
 
 const workflowPath = new URL('../.github/workflows/sync-upstream.yml', import.meta.url);
-const hasJq = spawnSync('jq', ['--version']).status === 0;
 
 function git(cwd: string, args: string[], allowFailure = false) {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
@@ -45,6 +44,10 @@ function extractPruneScript() {
 }
 
 const regressionTest = () => {
+  const jq = spawnSync('jq', ['--version']);
+  if (jq.status !== 0) {
+    throw new Error('jq is required for the sync-upstream prune regression test');
+  }
   const root = mkdtempSync(join(tmpdir(), 'sync-upstream-prune-'));
   try {
     const origin = join(root, 'origin.git');
@@ -126,6 +129,40 @@ const regressionTest = () => {
     git(work, ['add', '.']);
     git(work, ['commit', '-q', '--amend', '--no-edit']);
 
+    // Resolution amended into the handoff merge itself, manifest kept: the
+    // diff-tree still lists f.txt, but it no longer has markers, so it must be
+    // kept.
+    git(work, ['checkout', '-q', '-b', 'sync-conflict/amended-handoff', before]);
+    git(work, ['merge', '--no-ff', 'upstream', '-m', 'handoff'], true);
+    git(work, ['add', '-A']);
+    git(work, ['commit', '-q', '-m', 'handoff']);
+    writeFileSync(
+      join(work, '.sync-conflict.json'),
+      `${JSON.stringify({ upstream_sha: upstream, repo_sha_before: before })}\n`
+    );
+    git(work, ['add', '.']);
+    git(work, ['commit', '-q', '--amend', '--no-edit']);
+    writeFileSync(join(work, 'f.txt'), 'R\n');
+    git(work, ['add', 'f.txt']);
+    git(work, ['commit', '-q', '--amend', '--no-edit']);
+
+    // Same, but the manifest is removed during the amend. The message is still
+    // "handoff" and f.txt has no markers, so it must be kept.
+    git(work, ['checkout', '-q', '-b', 'sync-conflict/amended-handoff-no-manifest', before]);
+    git(work, ['merge', '--no-ff', 'upstream', '-m', 'handoff'], true);
+    git(work, ['add', '-A']);
+    git(work, ['commit', '-q', '-m', 'handoff']);
+    writeFileSync(
+      join(work, '.sync-conflict.json'),
+      `${JSON.stringify({ upstream_sha: upstream, repo_sha_before: before })}\n`
+    );
+    git(work, ['add', '.']);
+    git(work, ['commit', '-q', '--amend', '--no-edit']);
+    writeFileSync(join(work, 'f.txt'), 'R2\n');
+    git(work, ['add', 'f.txt']);
+    git(work, ['rm', '-q', '.sync-conflict.json']);
+    git(work, ['commit', '-q', '--amend', '--no-edit']);
+
     git(work, ['checkout', '-q', 'main']);
     git(work, ['push', '-q', 'origin', 'main']);
     git(work, [
@@ -135,6 +172,8 @@ const regressionTest = () => {
       'sync-conflict/only-handoff',
       'sync-conflict/merge-only',
       'sync-conflict/real-handoff',
+      'sync-conflict/amended-handoff',
+      'sync-conflict/amended-handoff-no-manifest',
     ]);
 
     const bin = join(root, 'bin');
@@ -168,16 +207,20 @@ const regressionTest = () => {
 
     const branches = git(origin, ['branch', '--format=%(refname:short)']).stdout;
     expect(branches).toContain('sync-conflict/merge-only');
+    expect(branches).toContain('sync-conflict/amended-handoff');
+    expect(branches).toContain('sync-conflict/amended-handoff-no-manifest');
     expect(branches).not.toContain('sync-conflict/only-handoff');
     expect(branches).not.toContain('sync-conflict/real-handoff');
 
-    // The three shapes differ only in content, never in parent SHAs, so assert on
+    // These shapes differ only in content, never in parent SHAs, so assert on
     // the reason text too: a resolution folded into the handoff merge must be
     // reported as unique work, and a markers-only handoff must not.
     const summary = readFileSync(summaryPath, 'utf8');
     const rowFor = (name: string) =>
       summary.split('\n').find((line) => line.startsWith('| `') && line.includes(name)) ?? '';
     expect(rowFor('sync-conflict/merge-only')).toContain('独有提交');
+    expect(rowFor('sync-conflict/amended-handoff')).toContain('独有提交');
+    expect(rowFor('sync-conflict/amended-handoff-no-manifest')).toContain('独有提交');
     expect(rowFor('sync-conflict/real-handoff')).toContain('已删除');
     expect(rowFor('sync-conflict/only-handoff')).toContain('已删除');
     expect(summary).toContain('保留');
@@ -186,11 +229,4 @@ const regressionTest = () => {
   }
 };
 
-if (hasJq) {
-  test('prune keeps branches whose only unique content is a merge resolution', regressionTest);
-} else {
-  test.skip(
-    'prune keeps branches whose only unique content is a merge resolution',
-    () => undefined
-  );
-}
+test('prune keeps unique resolutions and deletes markers-only handoffs', regressionTest);

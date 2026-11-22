@@ -565,11 +565,21 @@ jobs:
               fi
 
               UNIQUE_TREE=0
+              SCAN_FAILED=0
               while IFS= read -r c; do
                 [ -z "$c" ] && continue
-                read -r csha p1 p2 _rest <<< "$(git rev-list --parents -n1 "$c" 2>/dev/null || true)"
+                # fail closed：下面每个 git 查询失败都保留分支，不能当成「没有独有内容」
+                if ! PARENTS="$(git rev-list --parents -n1 "$c" 2>/dev/null)"; then
+                  SCAN_FAILED=1
+                  break
+                fi
+                read -r csha p1 p2 _rest <<< "$PARENTS"
                 if [ -n "${p2:-}" ]; then
-                  own="$(git diff-tree -c --no-commit-id --name-only -r "$c" 2>/dev/null | sed '/^$/d' || true)"
+                  if ! own="$(git diff-tree -c --no-commit-id --name-only -r "$c" 2>/dev/null)"; then
+                    SCAN_FAILED=1
+                    break
+                  fi
+                  own="$(printf '%s\n' "$own" | sed '/^$/d')"
                   if [ -z "$own" ]; then
                     # 没有自己的改动 = 纯交接 merge（上游那一半），跳过
                     continue
@@ -580,7 +590,11 @@ jobs:
                   while IFS= read -r fn; do
                     [ -z "$fn" ] && continue
                     case "$fn" in .sync-conflict.json) continue ;; esac
-                    if git show "$c:$fn" 2>/dev/null | grep -qE '^(<<<<<<< |=======$|>>>>>>> )'; then
+                    if ! CONTENT="$(git show "$c:$fn" 2>/dev/null)"; then
+                      SCAN_FAILED=1
+                      break 2
+                    fi
+                    if printf '%s\n' "$CONTENT" | grep -qE '^(<<<<<<< |=======$|>>>>>>> )'; then
                       unresolved=$((unresolved + 1))
                     else
                       resolved=$((resolved + 1))
@@ -591,7 +605,11 @@ jobs:
                   fi
                 else
                   # 普通提交：只改 .sync-conflict.json 的属于交接产物，跳过
-                  files="$(git show --pretty=format: --name-only "$c" 2>/dev/null | sed '/^$/d' || true)"
+                  if ! files="$(git show --pretty=format: --name-only "$c" 2>/dev/null)"; then
+                    SCAN_FAILED=1
+                    break
+                  fi
+                  files="$(printf '%s\n' "$files" | sed '/^$/d')"
                   if [ -z "$files" ]; then
                     # 空提交没有实质内容
                     continue
@@ -602,6 +620,11 @@ jobs:
                   UNIQUE_TREE=$((UNIQUE_TREE + 1))
                 fi
               done <<< "$COMMITS"
+
+              if [ "$SCAN_FAILED" = 1 ]; then
+                KEPT+=("$b"$'\t'"upstream 已在 main，但扫描分支提交失败，按保留处理")
+                continue
+              fi
 
               if [ "$UNIQUE_TREE" -gt 0 ]; then
                 KEPT+=("$b"$'\t'"upstream $(echo "$UP" | cut -c1-12) 已在 main，但分支还有 $UNIQUE_TREE 个独有提交")
