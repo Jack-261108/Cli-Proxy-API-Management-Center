@@ -72,11 +72,25 @@ jobs:
           set -euo pipefail
           current_tag="${{ steps.vars.outputs.tag }}"
           previous_tag="$(git tag --list 'v*' --sort=-v:refname | grep -v "^${current_tag}$" | head -n 1 || true)"
-          if [ -n "${previous_tag}" ]; then
+          # Bound the changelog to the commits between the previous tag and this
+          # one. Without a range the log is just "the last 20 commits", which
+          # drifts on every sync and has nothing to do with what this tag
+          # actually changed. Fall back to the whole history when there is no
+          # previous tag, or when the computed range cannot be resolved.
+          if [ -n "${previous_tag}" ] && git rev-parse --verify -q "${previous_tag}^{commit}" >/dev/null; then
             range="${previous_tag}..HEAD"
           else
             range="HEAD"
           fi
+          # `git rev-parse --verify` does NOT accept a range: it prints HEAD but
+          # exits 1, so verifying `A..B` that way would reject every valid range
+          # and silently fall back to the old "last 20 commits" behaviour.
+          # `rev-list --count` is the correct probe (it resolves the range and
+          # reports 0 for an empty-but-valid range).
+          if ! git rev-list --count "${range}" >/dev/null 2>&1; then
+            range="HEAD"
+          fi
+          echo "Release notes range: ${range}"
 
           : > release-notes.md
           echo "## Release ${current_tag}" >> release-notes.md
@@ -84,7 +98,13 @@ jobs:
           echo "Web UI 单文件构建产物（已移除快速开始页面）。" >> release-notes.md
           echo "" >> release-notes.md
           echo "### 变更记录" >> release-notes.md
-          git log --pretty=format:"- %h %s" -n 20 >> release-notes.md || true
+          if ! git log --pretty=format:"- %h %s" -n 20 "${range}" >> release-notes.md; then
+            # Range resolved but the log failed: never fail the release over
+            # changelog formatting, just fall back to the recent commits.
+            echo "- (range ${range} 无法读取，以下为最近提交)" >> release-notes.md
+            git log --pretty=format:"- %h %s" -n 20 HEAD >> release-notes.md || true
+          fi
+          echo "" >> release-notes.md
 
       - name: Create or Update Release
         uses: softprops/action-gh-release@v2
