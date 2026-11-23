@@ -48,9 +48,14 @@
 
 ## 建议的解冲突顺序
 
-1. 先看 `conflict_files`，把「我方刻意分叉」的文件（README*、`assets/*`、
-   `*QuickStart*`、`SponsorCampaignCard.*`）和真正的业务代码分开。业务页面（如
-   `ProvidersWorkbenchPage.*`）**不属于**刻意分叉，必须按上游意图解 —— 上游在持续重构它。
+1. 先看 `conflict_files`，把「我方刻意分叉」的文件（README*、`assets/*`、`*QuickStart*`）
+   和真正的业务代码分开。
+   - 前两类在 `sync-upstream.yml` 的自动解冲突规则里会直接取我方版本。
+   - `*QuickStart*`（含 `SponsorQuickStartPanel.*`）由 sponsor 规则**自动删除**，不解冲突。
+   - `SponsorCampaignCard.*` 已不再被应用渲染，但仍留在仓库里；它**不在**任何自动规则中，
+     真冲突时走正常流程人工决定。
+   业务页面（如 `ProvidersWorkbenchPage.*`）**不属于**刻意分叉，必须按上游意图解 ——
+   上游在持续重构它。
 2. 业务代码冲突按上游意图解，不要用 `-X ours` / `-X theirs` 整体吞掉一侧。
 3. 解完跑 `bun run verify`（tests + lint + build）。单文件部署约束见 `AGENTS.md`：
    不要编辑 `dist/`，不要引入外部构建产物。
