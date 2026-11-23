@@ -925,15 +925,61 @@ jobs:
               "🔗 [点击查看 GitHub Action 详情](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})" \
               "$ACTION_LINE")
 
-            RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+            # 通知失败必须有独立语义，不能和「同步失败」混为一谈：
+            #   * 这个 step 无论通知成功与否都以 exit 1 收尾（同步失败的语义），
+            #     所以如果只 `echo` 一行，一次凭证失效/Telegram 故障看起来和真冲突
+            #     完全一样，没人会去修通知链路。
+            #   * 因此分三态显式汇报到 step summary，并对通知失败打 ::error::
+            #     注解（annotation 在 run 页面顶部单独列出，不被 exit 1 吞掉）。
+            #
+            # 用 `-w '\n%{http_code}'` 取 HTTP 状态：Telegram 的失败也可能返回
+            # HTTP 200 + {"ok":false}（例如 chat 不存在），所以两个信号都要看。
+            NOTIFY_STATE="sent"
+            NOTIFY_DETAIL=""
+            # curl 失败必须在 set -e（Actions 默认 bash -e）下也能走到下面的三态判定：
+            # `VAR="$(cmd)"` 失败会直接终止 step，所以用 `|| CURL_RC=$?` 捕获。
+            CURL_RC=0
+            HTTP_BODY="$(curl -sS --max-time 20 -w '\n%{http_code}' \
+              -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
               -d "chat_id=${TG_CHAT_ID}" \
               --data-urlencode "text=${TEXT}" \
-              -d "parse_mode=Markdown")
-            echo "Telegram API Response: ${RESPONSE}"
-            # 通知失败不应该冒充「同步失败」：这里不打 exit 1，最终退出码由下面的
-            # 冲突语义决定。真正的凭据问题已经在上面 ::warning:: 里写过。
+              -d "parse_mode=Markdown" 2>&1)" || CURL_RC=$?
+            HTTP_CODE="$(printf '%s\n' "$HTTP_BODY" | tail -n1)"
+            RESPONSE="$(printf '%s\n' "$HTTP_BODY" | sed '$d')"
+            echo "Telegram API Response (HTTP ${HTTP_CODE}, curl rc=${CURL_RC}): ${RESPONSE}"
+
+            if [ "$CURL_RC" -ne 0 ]; then
+              NOTIFY_STATE="failed"
+              NOTIFY_DETAIL="curl 退出码 ${CURL_RC}（网络/DNS/TLS 层）"
+            elif [ "$HTTP_CODE" != "200" ]; then
+              NOTIFY_STATE="failed"
+              NOTIFY_DETAIL="HTTP ${HTTP_CODE}"
+            elif ! printf '%s' "$RESPONSE" | grep -q '"ok"[[:space:]]*:[[:space:]]*true'; then
+              NOTIFY_STATE="failed"
+              NOTIFY_DETAIL="HTTP 200 但 ok!=true"
+            fi
+
+            if [ "$NOTIFY_STATE" = "failed" ]; then
+              echo "::error::Telegram 通知发送失败（${NOTIFY_DETAIL}）。同步失败的告警没能送达 —— 这是通知链路故障，不是同步结果。"
+            fi
           else
+            NOTIFY_STATE="not-configured"
+            NOTIFY_DETAIL="TG_BOT_TOKEN / TG_CHAT_ID 未配置"
             echo "::warning::TG_BOT_TOKEN (or TELEGRAM_BOT_TOKEN) / TG_CHAT_ID (or TELEGRAM_CHAT_ID) is not configured in repository secrets."
           fi
+
+          # 把「同步结果」与「通知结果」分开写进 summary。两者混在一行时，
+          # 看 run 的人无法判断这次到底该去修代码还是修通知。
+          {
+            echo "### Sync Upstream 结果"
+            echo
+            echo "| 项目 | 状态 |"
+            echo "| --- | --- |"
+            echo "| 同步 | 失败（main 未收到本次同步） |"
+            echo "| 通知 | ${NOTIFY_STATE}${NOTIFY_DETAIL:+（${NOTIFY_DETAIL}）} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
           # 冲突（或合并步骤异常）是真实状态，run 必须红：main 没有收到这次同步。
+          # 注意：通知成败不影响这里的退出码 —— 同步失败本身已经是红，
+          # 通知失败只额外多一条 ::error:: 注解和 summary 里的一行。
           exit 1
