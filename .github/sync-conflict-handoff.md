@@ -49,7 +49,8 @@
 ## 建议的解冲突顺序
 
 1. 先看 `conflict_files`，把「我方刻意分叉」的文件（README*、`assets/*`、
-   `*QuickStart*`、`src/features/providers/ProvidersWorkbenchPage.*`）和真正的业务代码分开。
+   `*QuickStart*`、`SponsorCampaignCard.*`）和真正的业务代码分开。业务页面（如
+   `ProvidersWorkbenchPage.*`）**不属于**刻意分叉，必须按上游意图解 —— 上游在持续重构它。
 2. 业务代码冲突按上游意图解，不要用 `-X ours` / `-X theirs` 整体吞掉一侧。
 3. 解完跑 `bun run verify`（tests + lint + build）。单文件部署约束见 `AGENTS.md`：
    不要编辑 `dist/`，不要引入外部构建产物。

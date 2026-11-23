@@ -117,8 +117,12 @@ jobs:
                   echo "Auto-discarding upstream sponsor component: $f"
                   git rm -f "$f" 2>/dev/null || true
                   ;;
-                README.md|README_CN.md|assets/*|src/features/providers/ProvidersWorkbenchPage.*)
-                  # 文档/广告图片/去广告核心页面：保留我方去广告版本
+                README.md|README_CN.md|assets/*)
+                  # 文档/广告图片：保留我方去广告版本
+                  # 注意：**不要**把 src/ 下的业务页面放进来。上游在持续重构
+                  # workbench（ProvidersWorkbenchPage 每次大改），一旦把它列进
+                  # 保留清单，上游整个重构会被静默丢弃，还会留下引用已删组件的
+                  # 死链。业务代码走正常冲突流程。
                   echo "Auto-resolving doc/ad conflict by keeping our clean version: $f"
                   git checkout --ours -- "$f" 2>/dev/null || git rm -f "$f" 2>/dev/null || true
                   git add "$f" 2>/dev/null || true
