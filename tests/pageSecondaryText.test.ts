@@ -110,7 +110,6 @@ describe('system page', () => {
     expect(html).toMatch(new RegExp(`<p[^>]*>${i18n.t('system_info.clear_login_desc')}</p>`));
   });
 });
-<<<<<<< HEAD
 
 describe('logs page', () => {
   const source = read('src/features/logs/LogsPage.tsx');
@@ -153,5 +152,3 @@ describe('main layout', () => {
     expect(layout).toContain('className="sidebar-brand" title={fullBrandName}');
   });
 });
-=======
->>>>>>> upstream/main

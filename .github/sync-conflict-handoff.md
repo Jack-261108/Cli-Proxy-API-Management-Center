@@ -52,8 +52,10 @@
    和真正的业务代码分开。
    - 前两类在 `sync-upstream.yml` 的自动解冲突规则里会直接取我方版本。
    - `*QuickStart*`（含 `SponsorQuickStartPanel.*`）由 sponsor 规则**自动删除**，不解冲突。
-   - `SponsorCampaignCard.*` 已不再被应用渲染，但仍留在仓库里；它**不在**任何自动规则中，
-     真冲突时走正常流程人工决定。
+   - `SponsorCampaignCard.*` 已由上游删除，本 fork 也不再引用；如上游后续重新引入，
+     仍**不在**任何自动规则中，走正常流程人工决定。
+   - `src/features/providers/sheets/forms/SponsorProviderForm.*` 不是刻意分叉：上面那两处
+     取上游删掉的 `quickStart` 变体即可，其余按上游意图接受。
    业务页面（如 `ProvidersWorkbenchPage.*`）**不属于**刻意分叉，必须按上游意图解 ——
    上游在持续重构它。
 2. 业务代码冲突按上游意图解，不要用 `-X ours` / `-X theirs` 整体吞掉一侧。

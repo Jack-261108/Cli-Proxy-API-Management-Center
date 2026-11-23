@@ -152,15 +152,6 @@ function setStringInDoc(doc: YamlDocument, path: YamlPath, value: unknown): void
   }
 }
 
-function setStringListInDoc(doc: YamlDocument, path: YamlPath, values: string[]): void {
-  const nextValues = values.map((value) => value.trim()).filter(Boolean);
-  if (nextValues.length > 0) {
-    doc.setIn(path, nextValues);
-    return;
-  }
-  if (docHas(doc, path)) deletePathInDoc(doc, path);
-}
-
 function writeClientKeys(doc: YamlDocument, keys: string[]): void {
   const path = ['access', 'api-keys'];
   if (!keys.length) {

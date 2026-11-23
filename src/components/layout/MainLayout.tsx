@@ -53,11 +53,6 @@ import {
   resolvePluginAssetURL,
   type PluginResourceEntry,
 } from '@/features/plugins/pluginResources';
-<<<<<<< HEAD
-=======
-import { APIKEY_FUN_DISPLAY_NAME } from '@/features/providers/sponsor';
-import { hasApiKeyFunConfig } from '@/features/providers/sponsorBundle';
->>>>>>> upstream/main
 import { triggerHeaderRefresh } from '@/hooks/useHeaderRefresh';
 import { LANGUAGE_LABEL_KEYS, LANGUAGE_ORDER } from '@/utils/constants';
 import { isSupportedLanguage } from '@/utils/language';

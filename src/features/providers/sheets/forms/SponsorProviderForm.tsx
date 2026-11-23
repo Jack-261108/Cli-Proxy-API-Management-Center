@@ -897,16 +897,12 @@ export function SponsorProviderForm({
   }
 
   return (
-<<<<<<< HEAD
     <form id={formId} className={styles.form} onSubmit={handleSubmit} noValidate>
-=======
-    <form id={formId} className={formClassName} onSubmit={handleSubmit} noValidate>
       {conflictWarning && (
         <div className={styles.errorBox} role="note">
           {conflictWarning}
         </div>
       )}
->>>>>>> upstream/main
       <FormSection title={t('providersPage.sponsor.groupedKeysTitle')}>
         <div className={styles.entriesList}>
           {entries.map((entry, index) => (
