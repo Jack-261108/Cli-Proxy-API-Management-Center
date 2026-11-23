@@ -1,7 +1,7 @@
-// Secondary text on the dashboard, system, logs and plugins pages and the main layout:
-// definitions live in InfoTips after their labels, restating subtitles and descriptions are
-// gone, and warnings / destructive-action notes stay visible. Static markup and source
-// contracts only; hover, focus and tap behaviour and the visual layout need a browser.
+// Secondary text on the dashboard and system pages: definitions live in InfoTips after their
+// labels, restating subtitles and descriptions are gone, and destructive-action notes stay
+// visible. Static markup only; hover, focus and tap behaviour and the visual layout need a
+// browser.
 
 import { afterAll, describe, expect, test } from 'bun:test';
 import { readFileSync } from 'node:fs';
