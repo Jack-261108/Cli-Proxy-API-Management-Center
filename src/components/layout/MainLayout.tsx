@@ -502,14 +502,9 @@ export function MainLayout() {
   }, [fetchConfig]);
 
   const loadPluginResources = useCallback(async () => {
-<<<<<<< HEAD
-    if (connectionStatus !== 'connected' || !supportsPlugin || !showPluginsNav) {
-      setPluginResources([]);
-=======
     const requestID = ++pluginRequestRef.current;
-    if (connectionStatus !== 'connected' || !supportsPlugin) {
+    if (connectionStatus !== 'connected' || !supportsPlugin || !showPluginsNav) {
       setPluginData(null);
->>>>>>> upstream/main
       return;
     }
 
@@ -524,11 +519,7 @@ export function MainLayout() {
     } catch {
       if (requestID === pluginRequestRef.current) setPluginData(null);
     }
-<<<<<<< HEAD
-  }, [connectionStatus, supportsPlugin, showPluginsNav]);
-=======
-  }, [apiBase, connectionStatus, supportsPlugin]);
->>>>>>> upstream/main
+  }, [apiBase, connectionStatus, supportsPlugin, showPluginsNav]);
 
   const loadAuthFilesCount = useCallback(async () => {
     const requestID = ++authFilesCountRequestRef.current;

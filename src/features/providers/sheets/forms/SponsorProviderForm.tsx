@@ -866,51 +866,16 @@ export function SponsorProviderForm({
 
   if (aggregationConflict) {
     return (
-<<<<<<< HEAD
       <form id={formId} className={styles.form} onSubmit={(event) => event.preventDefault()}>
-        <div className={styles.errorBox}>{t('providersPage.sponsor.aggregationConflict')}</div>
-=======
-      <form id={formId} className={formClassName} onSubmit={(event) => event.preventDefault()}>
         <div className={styles.errorBox} role="alert">
           {t('providersPage.sponsor.aggregationConflict')}
         </div>
->>>>>>> upstream/main
       </form>
     );
   }
 
   return (
-<<<<<<< HEAD
     <form id={formId} className={styles.form} onSubmit={handleSubmit} noValidate>
-      <div className={styles.section}>
-        <h3 className={styles.sectionTitle}>{t('providersPage.sponsor.groupedKeysTitle')}</h3>
-        {entries.map((entry, index) => (
-          <SponsorKeyEntryCard
-            key={`${entry.protocol}-${index}`}
-            entry={entry}
-            index={index}
-            formId={formId}
-            mode={mode}
-            definition={definition}
-            usedProtocols={usedProtocols}
-            canRemove={mode === 'edit' || entries.length > 1}
-            mutating={mutating}
-            onChange={(nextEntry) => updateEntry(index, nextEntry)}
-            onRemove={() => removeEntry(index)}
-          />
-        ))}
-        <button
-          type="button"
-          className={styles.addBtn}
-          disabled={mutating || !missingProtocols.length}
-          onClick={addEntry}
-        >
-          <IconPlus size={12} />
-          <span>{t('providersPage.sponsor.addGroupedKey')}</span>
-        </button>
-      </div>
-=======
-    <form id={formId} className={formClassName} onSubmit={handleSubmit} noValidate>
       <FormSection title={t('providersPage.sponsor.groupedKeysTitle')}>
         <div className={styles.entriesList}>
           {entries.map((entry, index) => (
@@ -939,7 +904,6 @@ export function SponsorProviderForm({
           </button>
         </div>
       </FormSection>
->>>>>>> upstream/main
 
       {error ? (
         <div className={styles.errorBox} role="alert">
