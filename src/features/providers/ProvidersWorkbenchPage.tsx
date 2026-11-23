@@ -9,6 +9,10 @@ import { ProvidersHeader, type ProvidersHeaderSummary } from './components/Provi
 import { BrandTabs } from './components/BrandTabs';
 import { BrandPanel, type BrandPanelControls } from './components/BrandPanel';
 import { ProviderPicker } from './components/ProviderPicker';
+<<<<<<< HEAD
+=======
+import { SponsorQuickStartPanel } from './components/SponsorQuickStartPanel';
+>>>>>>> upstream/main
 import {
   ProviderSheet,
   type ProviderSheetHandle,
@@ -451,6 +455,25 @@ export function ProvidersWorkbenchPage({ fixedBrand }: ProvidersWorkbenchPagePro
     );
   }
 
+<<<<<<< HEAD
+=======
+  if (isQuickStart) {
+    return (
+      <div className={styles.page}>
+        {header}
+        {errorBanner}
+        <div className={styles.quickStartStack}>
+          <SponsorQuickStartPanel
+            resource={quickStartResource}
+            workbench={workbench}
+            mutationDisabled={disableMutations}
+          />
+        </div>
+      </div>
+    );
+  }
+
+>>>>>>> upstream/main
   const tabId = (brand: ProviderBrand) => `${domId}-tab-${brand}`;
   const panelId = `${domId}-panel`;
 
