@@ -50,9 +50,6 @@ export function resolveSponsorBundle(brand: SponsorProviderBrand, config?: Confi
   return { bundle, ambiguousProtocols };
 }
 
-export const buildSponsorBundle = (brand: SponsorProviderBrand, config?: Config | null) =>
-  resolveSponsorBundle(brand, config).bundle;
-
 export function allSponsorProtocolsBlocked(
   brand: SponsorProviderBrand,
   ambiguous?: SponsorProtocol[]
