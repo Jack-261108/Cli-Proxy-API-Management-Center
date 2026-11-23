@@ -84,8 +84,3 @@ export function prepareSponsorWrite(
   if (conflicts.length) throw new Error(sponsorConflictMessage(t, conflicts));
   return bundle;
 }
-
-export const hasApiKeyFunConfig = (config: Config | null | undefined): boolean => {
-  const raw = buildSponsorBundle('apikeyFun', config);
-  return raw.openai.length > 0 || raw.claude.length > 0 || raw.codex.length > 0;
-};

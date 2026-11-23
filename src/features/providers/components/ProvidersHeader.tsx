@@ -12,7 +12,7 @@ export interface ProvidersHeaderSummary {
 
 interface ProvidersHeaderProps {
   title: string;
-  /** Omitted on the quick-start route, which manages a single bundle. */
+  /** Optional telemetry summary; the meta line is omitted when this is not provided. */
   summary?: ProvidersHeaderSummary;
   isFetching: boolean;
   onRefresh: () => void;

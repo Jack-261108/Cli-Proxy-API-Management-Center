@@ -103,7 +103,6 @@
   },
   "nav": {
     "dashboard": "대시보드",
-    "quick_start": "빠른 시작",
     "ai_providers": "AI 공급자",
     "auth_files": "인증 파일",
     "oauth": "OAuth 로그인",
@@ -123,7 +122,6 @@
   },
   "nav_meta": {
     "dashboard": "운영 개요",
-    "quick_start": "APIKEY.FUN 설정",
     "ai_providers": "업스트림 모델 라우팅",
     "auth_files": "인증 파일 및 자격 증명",
     "oauth": "OAuth 권한 부여",

@@ -103,7 +103,6 @@
   },
   "nav": {
     "dashboard": "Bảng điều khiển",
-    "quick_start": "Bắt đầu nhanh",
     "ai_providers": "AI Provider",
     "auth_files": "File xác thực",
     "oauth": "Đăng nhập OAuth",
@@ -123,7 +122,6 @@
   },
   "nav_meta": {
     "dashboard": "Tổng quan vận hành",
-    "quick_start": "Thiết lập APIKEY.FUN",
     "ai_providers": "Định tuyến model upstream",
     "auth_files": "File xác thực & credential",
     "oauth": "Ủy quyền OAuth",
