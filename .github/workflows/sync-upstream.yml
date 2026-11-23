@@ -936,12 +936,14 @@ jobs:
             # HTTP 200 + {"ok":false}（例如 chat 不存在），所以两个信号都要看。
             NOTIFY_STATE="sent"
             NOTIFY_DETAIL=""
+            # curl 失败必须在 set -e（Actions 默认 bash -e）下也能走到下面的三态判定：
+            # `VAR="$(cmd)"` 失败会直接终止 step，所以用 `|| CURL_RC=$?` 捕获。
+            CURL_RC=0
             HTTP_BODY="$(curl -sS --max-time 20 -w '\n%{http_code}' \
               -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
               -d "chat_id=${TG_CHAT_ID}" \
               --data-urlencode "text=${TEXT}" \
-              -d "parse_mode=Markdown" 2>&1)"
-            CURL_RC=$?
+              -d "parse_mode=Markdown" 2>&1)" || CURL_RC=$?
             HTTP_CODE="$(printf '%s\n' "$HTTP_BODY" | tail -n1)"
             RESPONSE="$(printf '%s\n' "$HTTP_BODY" | sed '$d')"
             echo "Telegram API Response (HTTP ${HTTP_CODE}, curl rc=${CURL_RC}): ${RESPONSE}"
