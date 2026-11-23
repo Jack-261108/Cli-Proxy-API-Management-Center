@@ -103,7 +103,6 @@
   },
   "nav": {
     "dashboard": "Dashboard",
-    "quick_start": "Quick Start",
     "ai_providers": "AI Providers",
     "auth_files": "Auth Files",
     "oauth": "OAuth Login",
@@ -123,7 +122,6 @@
   },
   "nav_meta": {
     "dashboard": "Operations overview",
-    "quick_start": "APIKEY.FUN setup",
     "ai_providers": "Upstream model routing",
     "auth_files": "Auth files & credentials",
     "oauth": "OAuth authorization",
