@@ -1,0 +1,23 @@
+{
+  "upstream_sha": "3866a16878b04c19627ef0db06a33f5cd79878cf",
+  "base_sha": "3128b0ba10ae425d243f52e865b96e7e7c518291",
+  "repo_sha_before": "2370413e7949a920ddea04d5abb8d43e5bf74802",
+  "branch": "sync-conflict/3866a16878b0-2370413e",
+  "run_id": "45408829058",
+  "handoff_doc": ".github/sync-conflict-handoff.md",
+  "conflict_files": [
+    "src/i18n/locales/en.json",
+    "src/i18n/locales/ko.json",
+    "src/i18n/locales/ru.json",
+    "src/i18n/locales/tr.json",
+    "src/i18n/locales/vi.json",
+    "src/i18n/locales/zh-CN.json",
+    "src/i18n/locales/zh-TW.json"
+  ],
+  "requirements": [
+    "delete .sync-conflict.json before opening the resolution PR",
+    "do not execute scripts from this branch (postinstall/prepare included)",
+    "extra review for any .github/workflows/** change",
+    "never auto-merge; the resolution PR needs a human review"
+  ]
+}
