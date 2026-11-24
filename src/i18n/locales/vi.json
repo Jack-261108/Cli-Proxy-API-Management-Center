@@ -126,13 +126,8 @@
     "auth_files": "File xác thực & credential",
     "oauth": "Ủy quyền OAuth",
     "routing": "Tầng ưu tiên và chuyển đổi dự phòng",
-<<<<<<< HEAD
-    "quota_management": "API key & giới hạn",
-    "plugins": "Bật/tắt & cấu hình plugin",
-=======
     "quota_management": "Quota credential OAuth",
-    "plugins": "Cài đặt, cập nhật & cấu hình",
->>>>>>> upstream/main
+    "plugins": "Bật/tắt & cấu hình plugin",
     "logs": "Truy vết yêu cầu",
     "config_management": "Cấu hình gateway",
     "system_info": "Runtime & chẩn đoán"

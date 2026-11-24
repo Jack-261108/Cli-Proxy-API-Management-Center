@@ -126,13 +126,8 @@
     "auth_files": "Kimlik Dosyaları ve Kimlik Bilgileri",
     "oauth": "OAuth Yetkilendirmesi",
     "routing": "Öncelik katmanları ve yük devretme",
-<<<<<<< HEAD
-    "quota_management": "API Anahtarları ve Sınırlar",
-    "plugins": "Eklenti Anahtarları ve Yapılandırma",
-=======
     "quota_management": "OAuth Kimlik Bilgisi Kotaları",
-    "plugins": "Kurulum, güncelleme ve yapılandırma",
->>>>>>> upstream/main
+    "plugins": "Eklenti Anahtarları ve Yapılandırma",
     "logs": "İstek İzleme",
     "config_management": "Ağ Geçidi Yapılandırması",
     "system_info": "Çalışma Zamanı ve Tanılama"

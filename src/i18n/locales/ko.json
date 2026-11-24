@@ -126,13 +126,8 @@
     "auth_files": "인증 파일 및 자격 증명",
     "oauth": "OAuth 권한 부여",
     "routing": "우선순위 계층과 장애 조치",
-<<<<<<< HEAD
-    "quota_management": "API 키 및 한도",
-    "plugins": "플러그인 설정 및 전환",
-=======
     "quota_management": "OAuth 자격 증명 할당량",
-    "plugins": "설치, 업데이트 및 설정",
->>>>>>> upstream/main
+    "plugins": "플러그인 설정 및 전환",
     "logs": "요청 추적",
     "config_management": "게이트웨이 설정",
     "system_info": "런타임 및 진단"

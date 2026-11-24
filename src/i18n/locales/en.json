@@ -126,13 +126,8 @@
     "auth_files": "Auth files & credentials",
     "oauth": "OAuth authorization",
     "routing": "Priority tiers and failover",
-<<<<<<< HEAD
-    "quota_management": "API keys & limits",
-    "plugins": "Plugin toggles & config",
-=======
     "quota_management": "OAuth credential quotas",
-    "plugins": "Install, update & configure",
->>>>>>> upstream/main
+    "plugins": "Plugin toggles & config",
     "logs": "Request tracing",
     "config_management": "Gateway configuration",
     "system_info": "Runtime & diagnostics"
